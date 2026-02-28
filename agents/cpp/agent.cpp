@@ -271,10 +271,32 @@ static GameResult play_one_game(const std::string &game_path,
     return result;
 }
 
+// ── Pipe mode (stdin/stdout filter for TUI integration) ────────
+
+static void run_pipe() {
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty()) continue;
+        GameState st = parse_state(line);
+        if (!st.alive) break;
+        std::string action = choose_action(st);
+        std::cout << action << "\n";
+        std::cout.flush();
+    }
+}
+
 // ── Entry point ─────────────────────────────────────────────────
 
 int main(int argc, char *argv[]) {
     srand((unsigned)time(nullptr));
+
+    // --pipe: act as a stdin/stdout filter (for TUI integration)
+    for (int i = 1; i < argc; i++) {
+        if (std::string(argv[i]) == "--pipe") {
+            run_pipe();
+            return 0;
+        }
+    }
 
     // Default game binary: ../../snake relative to this executable
     // (works when run from agents/cpp/)

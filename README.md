@@ -1,15 +1,21 @@
 # Snake
 
-A terminal-based Snake game written in C with an **agent API** for programmatic play.
+A terminal-based Snake game written in C with an **interactive TUI menu**,
+a **built-in agent runner** with watch mode, batch statistics, and logging,
+and a **JSON line-protocol** for writing agents in any language.
 
 ## Features
 
 | Feature | Details |
 |---|---|
-| **Interactive TUI** | ncurses-based; arrow keys / WASD; colour support |
-| **Agent mode** | JSON line-protocol on stdin/stdout — language-agnostic |
-| **Tick modes** | *Timed* (real-time) or *Step* (advance per input) |
-| **Configurable** | Grid size, speed, random seed — all set before the game starts |
+| **TUI menu** | ncurses main menu → play settings, agent config, all driven by keyboard |
+| **Play mode** | Arrow keys / WASD, colour support, timed or step-by-step |
+| **Agent runner** | Batch-run any agent with live watch mode, progress bar, per-game stats |
+| **Summary screen** | Avg / max / min / median / stddev for scores & ticks; save to file |
+| **Action logging** | Optional per-tick JSONL log of every decision the agent made |
+| **Dynamic agents** | Drop an `agent.json` manifest into `agents/<name>/` and it appears in the menu |
+| **Agent protocol** | JSON line-protocol on stdin/stdout — language-agnostic |
+| **Custom command** | Run any shell command as an agent directly from the menu |
 | **Performance** | Ring-buffer snake body + O(1) grid collision checks |
 
 ## Quick start
@@ -18,16 +24,19 @@ A terminal-based Snake game written in C with an **agent API** for programmatic 
 # Build the game
 make
 
-# Play interactively (timed mode, 200 ms per tick)
+# Launch the interactive menu (play or run agents)
 ./snake
+
+# Play directly (timed mode, 200 ms per tick)
+./snake play
 
 # Play in step mode (one tick per keypress)
 ./snake play --step
 
-# Run the Python agent
+# Run the Python agent standalone
 cd agents/python && python agent.py
 
-# Run the C++ agent
+# Run the C++ agent standalone
 cd agents/cpp && make && ./agent
 ```
 
@@ -57,10 +66,14 @@ make clean  # remove build artefacts
 
 ```
 ./snake [play|agent] [options]
+```
 
+With **no arguments** the interactive TUI menu is shown.
+
+```
 Modes:
-  play          Interactive ncurses TUI (default)
-  agent         JSON line-protocol on stdin/stdout
+  play          Interactive ncurses TUI
+  agent         JSON line-protocol on stdin/stdout (for external tools)
 
 Tick modes:
   --step        Advance one tick per input  (default for agent)
@@ -74,7 +87,26 @@ Options:
   --help        Show help
 ```
 
-### Interactive controls
+## Interactive menu
+
+Running `./snake` (no arguments) presents a main menu:
+
+```
+┌──────────────────────────────────┐
+│           S N A K E              │
+├──────────────────────────────────┤
+│   > Play Game                    │
+│     Agent Mode                   │
+│     Quit                         │
+└──────────────────────────────────┘
+```
+
+**Navigation:** Up/Down or J/K to move, Enter to select, Q to quit.
+
+### Play Game
+
+Opens a settings form where you configure grid size, speed, seed, and tick
+mode (timed vs. step).  Press Enter to start the game.
 
 | Key | Action |
 |---|---|
@@ -82,20 +114,145 @@ Options:
 | Space / Enter | Advance one tick without turning (step mode) |
 | Q | Quit |
 
-## Agent API
+### Agent Mode
 
-In agent mode (`./snake agent`) the game communicates via **JSON lines** on
-stdin/stdout.
+Opens the **agent configuration form**:
 
-### Protocol
+| Setting | Description |
+|---|---|
+| **Agent** | Cycle through all discovered agents and "Custom Command" |
+| **Command** | *(shown only for Custom Command)* Shell command to run |
+| **Games** | Number of games to play (1–100,000) |
+| **Width / Height** | Grid dimensions |
+| **Speed** | Tick interval in ms (for timed mode / watch mode pacing) |
+| **Seed** | Random seed (0 = random) |
+| **Tick Mode** | Timed or Step |
+| **Watch** | Yes = render each frame live; No = show progress bar only |
+| **Log Actions** | Yes = write per-tick JSONL action log to a file |
 
-1. The game writes a **state line** (JSON) to stdout.
-2. The agent reads it, decides, and writes a **command** to stdin.
-3. In step mode the game waits for the command; in timed mode it advances
-   on a timer and reads commands opportunistically.
-4. When `"alive"` is `false` the game outputs the final state and exits.
+**Form controls:** Up/Down to navigate, Left/Right to change, `<`/`>` or
+PgUp/PgDn for big steps, type digits for numbers.  Enter to start.  Esc to
+go back.
 
-### State format
+#### Watch mode controls
+
+While watching an agent play:
+
+| Key | Action |
+|---|---|
+| Q / Esc | Abort and go to summary |
+| N | Skip to the next game |
+| Space | Pause / resume |
+| + / - | Adjust speed ±20 ms |
+
+#### Summary screen
+
+After all games complete (or on abort), the summary shows:
+
+- Agent name, grid, total duration
+- Score statistics (avg, max, min, median, std dev)
+- Tick statistics (avg, max, min, median, std dev)
+- Log file path (if logging was enabled)
+- Scrollable per-game results table
+
+| Key | Action |
+|---|---|
+| Up / Down | Scroll per-game table |
+| S | Save full summary to a `.txt` file |
+| R | Run the same batch again |
+| C | Go back to reconfigure settings |
+| Q / Esc | Return to main menu |
+
+## Adding your own agent
+
+The agent menu is **dynamic**.  Any subdirectory of `agents/` that contains
+an `agent.json` manifest file automatically appears as a selectable agent
+in the TUI.
+
+### Step-by-step
+
+1. **Create a directory** under `agents/`:
+
+   ```bash
+   mkdir agents/my_agent
+   ```
+
+2. **Write your agent program.**  It must support a `--pipe` mode that
+   reads JSON game state lines from stdin and writes turn commands
+   (`straight`, `left`, or `right`) to stdout — one per line:
+
+   ```
+   stdin  →  {"tick":0,"alive":true,"score":0,"width":20,"height":20, ...}
+   stdout ←  left
+   stdin  →  {"tick":1,"alive":true,"score":0,"width":20,"height":20, ...}
+   stdout ←  straight
+   ...
+   ```
+
+3. **Create `agents/my_agent/agent.json`:**
+
+   ```json
+   {
+       "name": "My Smart Agent",
+       "command": "python3 my_agent.py --pipe",
+       "description": "Uses A* pathfinding to chase food"
+   }
+   ```
+
+   | Field | Required | Description |
+   |---|---|---|
+   | `name` | Yes | Display name shown in the TUI menu (max 63 chars) |
+   | `command` | Yes | Shell command to run **from the agent's directory** |
+   | `description` | No | Short description (informational, max 127 chars) |
+
+4. **Restart the snake program.**  Your agent will appear in the Agent
+   dropdown immediately.
+
+### Example: minimal Python agent
+
+```
+agents/my_agent/
+├── agent.json
+└── my_agent.py
+```
+
+`agent.json`:
+```json
+{
+    "name": "My Agent",
+    "command": "python3 my_agent.py --pipe",
+    "description": "Always goes straight"
+}
+```
+
+`my_agent.py`:
+```python
+#!/usr/bin/env python3
+import json, sys
+
+for line in sys.stdin:
+    state = json.loads(line.strip())
+    if not state["alive"]:
+        break
+    print("straight", flush=True)
+```
+
+### Notes
+
+- The `command` is executed **from the agent's own directory** as the
+  working directory, so relative paths in the command refer to files inside
+  `agents/my_agent/`.
+- The command is run via `/bin/sh -c`, so shell features (pipes, `&&`,
+  environment variables) are available.
+- The program must use **line-buffered** I/O.  Flush stdout after every
+  line.
+- Up to 32 agents can be registered (including built-in and custom).
+- The "Custom Command" option is always available as the last entry in
+  the agent list for one-off testing with an arbitrary command.
+
+### Pipe protocol reference
+
+Each tick the game writes one JSON line to the agent's stdin:
 
 ```json
 {
@@ -110,29 +267,22 @@ stdin/stdout.
 }
 ```
 
-| Field | Type | Description |
-|---|---|---|
-| `tick` | int | Steps elapsed |
-| `alive` | bool | `false` on death or board-full win |
-| `score` | int | Food items eaten |
-| `width`, `height` | int | Grid dimensions |
-| `dir` | string | Current heading: `"up"`, `"right"`, `"down"`, `"left"` |
-| `snake` | `[[x,y],…]` | Body from head to tail |
-| `food` | `[x,y]` | Food position (`[-1,-1]` if board is full) |
+The agent must respond with exactly one line:
 
-### Commands
+```
+straight | left | right
+```
 
-Write **one line** to stdin:
+Turns are **relative** to the snake's current heading, not absolute.
 
-| Command | Effect |
-|---|---|
-| `straight` | Continue in current direction |
-| `left` | Turn 90° counter-clockwise (relative) |
-| `right` | Turn 90° clockwise (relative) |
+When `"alive"` is `false`, the game is over — the agent should exit or
+stop reading.
 
-Turns are **relative** to the snake's heading, not absolute directions.
+## Agent API (subprocess mode)
 
-## Agents
+The included Python and C++ agents can also be run **standalone** — they
+launch `./snake agent --step` as a subprocess and manage the protocol
+themselves.  This is useful for running agents outside the TUI.
 
 ### Python (`agents/python/agent.py`)
 
@@ -161,26 +311,6 @@ Both agents implement the same strategy: **pick a random action that doesn't
 cause immediate death** (wall or self-collision on the very next tick).  They
 correctly account for the tail retracting when not eating food.
 
-### Writing your own agent
-
-Any language that can spawn a subprocess and do line-buffered I/O works:
-
-```python
-import subprocess, json
-
-proc = subprocess.Popen(
-    ["./snake", "agent", "--step"],
-    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
-)
-
-while True:
-    state = json.loads(proc.stdout.readline())
-    if not state["alive"]:
-        break
-    proc.stdin.write("straight\n")   # ← your logic here
-    proc.stdin.flush()
-```
-
 ## Architecture
 
 ```
@@ -189,13 +319,17 @@ snake/
 ├── src/
 │   ├── game.h                Structures & API declarations
 │   ├── game.c                Core logic (ring-buffer, grid, tick)
-│   └── main.c                CLI, ncurses TUI, agent JSON I/O
+│   ├── agent.h               Built-in agent interface
+│   ├── agent.c               Built-in naive agent (C)
+│   └── main.c                CLI, ncurses TUI, menu, agent runner
 └── agents/
     ├── python/
-    │   └── agent.py          Naive Python agent
+    │   ├── agent.json         Agent manifest (auto-discovered)
+    │   └── agent.py           Naive Python agent
     └── cpp/
-        ├── agent.cpp         Naive C++ agent
-        └── Makefile          Build the C++ agent
+        ├── agent.json         Agent manifest (auto-discovered)
+        ├── agent.cpp          Naive C++ agent
+        └── Makefile           Build the C++ agent
 ```
 
 ## Game mechanics

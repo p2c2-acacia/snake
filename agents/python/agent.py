@@ -151,9 +151,37 @@ def play_one_game(game_path: str, extra_args: list, visual: bool) -> dict:
     return result
 
 
+# ── Pipe mode (stdin/stdout filter for TUI integration) ─────────
+
+def run_pipe() -> None:
+    """Read game state from stdin, write actions to stdout.
+
+    Used by the snake TUI to drive this agent without launching a
+    separate game subprocess.
+    """
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            state = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not state.get("alive", False):
+            break
+        action = choose_action(state)
+        sys.stdout.write(action + "\n")
+        sys.stdout.flush()
+
+
 # ── Entry point ─────────────────────────────────────────────────
 
 def main() -> None:
+    # --pipe: act as a stdin/stdout filter (for TUI integration)
+    if "--pipe" in sys.argv:
+        run_pipe()
+        return
+
     # Default game binary path: ../../snake relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_game = os.path.join(script_dir, "..", "..", "snake")

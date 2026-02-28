@@ -1,0 +1,13 @@
+# Build artifacts
+snake
+src/*.o
+
+# Agent build artifacts
+agents/cpp/agent
+
+# Log files
+snake_log_*.jsonl
+snake_summary_*.txt
+
+# Backup files
+*.bak

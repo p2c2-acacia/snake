@@ -1,0 +1,5 @@
+{
+    "name": "C++ Naive",
+    "command": "./agent --pipe",
+    "description": "Avoids immediate death, picks randomly"
+}
