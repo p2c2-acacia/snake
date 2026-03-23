@@ -1,5 +1,5 @@
 {
-    "name": "Python Naive",
+    "name": "Python Template",
     "command": "python3 agent.py --pipe",
-    "description": "Avoids immediate death, picks randomly"
+    "description": "Beginner-friendly Python stdin/stdout template"
 }

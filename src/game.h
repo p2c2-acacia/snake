@@ -24,6 +24,7 @@ extern "C" {
 
 /* Maximum possible snake body length (cells on the grid). */
 #define MAX_SNAKE_LEN (MAX_GRID_DIM * MAX_GRID_DIM)
+#define MAX_APPLES    MAX_SNAKE_LEN
 
 /* ── Cell types on the grid ─────────────────────────────────── */
 typedef enum { CELL_EMPTY = 0, CELL_SNAKE = 1, CELL_FOOD = 2 } CellType;
@@ -33,6 +34,33 @@ typedef enum { DIR_UP = 0, DIR_RIGHT = 1, DIR_DOWN = 2, DIR_LEFT = 3 } Direction
 
 /* ── Relative turn commands ─────────────────────────────────── */
 typedef enum { TURN_STRAIGHT = 0, TURN_LEFT = 1, TURN_RIGHT = 2 } Turn;
+
+/* ── End states and scoring modes ───────────────────────────── */
+typedef enum {
+    GAME_OUTCOME_RUNNING = 0,
+    GAME_OUTCOME_PASS    = 1,
+    GAME_OUTCOME_FAIL    = 2
+} GameOutcome;
+
+typedef enum {
+    SCORE_PASS_FAIL = 0,
+    SCORE_TIME_RANK = 1
+} ScoreMode;
+
+/* ── Difficulty rules ────────────────────────────────────────── */
+typedef struct {
+    int stage;                      /* 1..7 */
+    int stage2_fixed_apples;        /* stage 2 */
+    int stage4_fixed_apples;        /* stage 4 */
+    int stage5_goal_apples;         /* stage 5 pass threshold */
+    int stage6_fixed_apples;        /* stage 6 active apples */
+    int stage6_goal_apples;         /* stage 6 pass threshold */
+    int stage7_initial_apples;      /* stage 7 initial active apples */
+    int stage7_increment_every;     /* +apples every N eaten */
+    int stage7_increment_by;        /* add this many apples */
+    int stage7_max_apples;          /* cap active apples */
+    int stage7_goal_apples;         /* stage 7 pass threshold */
+} GameRules;
 
 /* ── 2-D point ──────────────────────────────────────────────── */
 typedef struct { int x, y; } Point;
@@ -50,11 +78,19 @@ typedef struct {
     int           snake_len;
 
     Direction     dir;                 /* current heading */
-    Point         food;                /* food position */
+    Point         apples[MAX_APPLES];  /* active apples on the board */
+    int           apple_count;         /* number of active apples */
+    Point         food;                /* first apple (compatibility alias) */
+    int           apples_eaten;        /* total apples collected */
+    int           goal_apples;         /* pass threshold */
+    int           stage7_active_apples;/* dynamic active apples for stage 7 */
 
     int           score;
     int           alive;               /* 1 while playing, 0 on death/win */
     int           tick;                /* incremented after each successful step */
+    GameOutcome   outcome;
+    ScoreMode     score_mode;
+    GameRules     rules;
 
     Turn          pending_turn;        /* queued turn for the next tick */
 
@@ -70,6 +106,8 @@ typedef struct {
  * @param seed           Random seed; 0 → use current time.
  */
 void game_init(SnakeGame *g, int width, int height, unsigned int seed);
+void game_init_with_rules(SnakeGame *g, int width, int height,
+                          unsigned int seed, const GameRules *rules);
 
 /** Queue a relative turn for the next tick. */
 void game_set_turn(SnakeGame *g, Turn turn);
@@ -93,6 +131,15 @@ Turn parse_turn(const char *s);
 /** Convert an absolute desired direction to a relative turn from @p current.
  *  Returns TURN_STRAIGHT for same-direction or 180° (which is forbidden). */
 Turn direction_to_turn(Direction current, Direction desired);
+
+/** Human-readable game outcome: "running", "pass", "fail". */
+const char *game_outcome_name(GameOutcome outcome);
+
+/** Human-readable score mode: "pass_fail" or "time_rank". */
+const char *game_score_mode_name(ScoreMode mode);
+
+/** Fill a GameRules struct with default values. */
+void game_rules_default(GameRules *rules);
 
 #ifdef __cplusplus
 }
