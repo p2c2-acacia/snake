@@ -93,6 +93,40 @@ Scoring:
 - stages 1-5 → pass/fail
 - stages 6-7 → time ranking
 
+### Default completion criteria (normative)
+
+- Stage 1: **pass** when the only apple is eaten.
+- Stage 2: **pass** when all initial fixed apples are eaten.
+- Stage 3: **pass** when the only random apple is eaten.
+- Stage 4: **pass** when all initial random apples are eaten.
+- Stage 5: **pass** when `apples_eaten >= stage5_goal_apples`.
+- Stage 6: **pass** when `apples_eaten >= stage6_goal_apples`.
+- Stage 7: **pass** when `apples_eaten >= stage7_goal_apples`.
+- Any stage: wall/body collision => immediate **fail**.
+
+### Time ranking definition (normative for stages 6-7)
+
+- Primary ranking metric: `ticks` to terminal success/fail state.
+- Lower `ticks` ranks better.
+- If two runs have equal ticks, higher `apples_eaten` ranks better.
+- If still tied, ordering is stable by run index (earlier run first).
+- Summary should expose at least ticks min/avg/max and pass count.
+
+### Canonical default tunables
+
+These defaults are authoritative and sourced from `settings.json`:
+
+- `stage2_fixed_apples = 4`
+- `stage4_fixed_apples = 4`
+- `stage5_goal_apples = 10`
+- `stage6_fixed_apples = 3`
+- `stage6_goal_apples = 20`
+- `stage7_initial_apples = 2`
+- `stage7_increment_every = 5`
+- `stage7_increment_by = 1`
+- `stage7_max_apples = 8`
+- `stage7_goal_apples = 30`
+
 ## Data flow
 
 1. Startup reads settings and initializes agent registry.
