@@ -1,5 +1,5 @@
 {
-    "name": "C++ Naive",
+    "name": "C++ Template",
     "command": "./agent --pipe",
-    "description": "Avoids immediate death, picks randomly"
+    "description": "Beginner-friendly C++ stdin/stdout template"
 }

@@ -1407,6 +1407,39 @@ static int int_cmp(const void *a, const void *b) {
     return *(const int *)a - *(const int *)b;
 }
 
+static const GameResult *g_rank_results = NULL;
+
+/*
+ * Time-rank comparator (best first):
+ *   1) pass outcomes before fail outcomes
+ *   2) lower ticks
+ *   3) higher apples eaten
+ *   4) stable by original run index
+ */
+static int time_rank_idx_cmp(const void *a, const void *b) {
+    int ia = *(const int *)a;
+    int ib = *(const int *)b;
+    const GameResult *ra = &g_rank_results[ia];
+    const GameResult *rb = &g_rank_results[ib];
+
+    int pa = (ra->outcome == GAME_OUTCOME_PASS) ? 1 : 0;
+    int pb = (rb->outcome == GAME_OUTCOME_PASS) ? 1 : 0;
+    if (pa != pb) return pb - pa;
+
+    if (ra->ticks != rb->ticks) return (ra->ticks < rb->ticks) ? -1 : 1;
+    if (ra->apples_eaten != rb->apples_eaten)
+        return (ra->apples_eaten > rb->apples_eaten) ? -1 : 1;
+
+    return ia - ib;
+}
+
+static void build_time_rank_order(const BatchResult *br, int n, int *order) {
+    for (int i = 0; i < n; i++) order[i] = i;
+    g_rank_results = br->results;
+    qsort(order, (size_t)n, sizeof(int), time_rank_idx_cmp);
+    g_rank_results = NULL;
+}
+
 static double calc_median(const int *arr, int n) {
     int *tmp = malloc((size_t)n * sizeof(int));
     memcpy(tmp, arr, (size_t)n * sizeof(int));
@@ -1433,11 +1466,13 @@ static double calc_stddev(const int *arr, int n, double mean) {
 static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
     int n = br->completed;
     if (n <= 0) return 0;
+    int is_time_rank = (cfg->difficulty_stage >= 6);
 
     /* gather stats */
     int *scores = malloc((size_t)n * sizeof(int));
     int *ticks  = malloc((size_t)n * sizeof(int));
     int *eaten  = malloc((size_t)n * sizeof(int));
+    int *rank_order = NULL;
     int sum_sc = 0, sum_tk = 0, sum_eaten = 0, max_sc = 0, min_sc = scores ? scores[0] : 0;
     int max_tk = 0, min_tk = 0;
     int pass_count = 0;
@@ -1460,6 +1495,10 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
     double med_tk = calc_median(ticks, n);
     double std_sc = calc_stddev(scores, n, avg_sc);
     double std_tk = calc_stddev(ticks, n, avg_tk);
+    if (is_time_rank) {
+        rank_order = malloc((size_t)n * sizeof(int));
+        if (rank_order) build_time_rank_order(br, n, rank_order);
+    }
 
     int scroll = 0;          /* scroll offset for per-game table */
     const int tbl_rows = 5;  /* visible rows in the table */
@@ -1469,7 +1508,7 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
 
         int bw = 56;
         /* top stats area: ~18 rows, per-game table: tbl_rows + 2, controls: 3 */
-        int stats_h = 18;
+        int stats_h = is_time_rank ? 19 : 18;
         int bh = stats_h + tbl_rows + 5;
         int bx = (COLS - bw) / 2, by = 0;
         if (LINES > bh + 2) by = (LINES - bh) / 2;
@@ -1505,10 +1544,20 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
         mvprintw(r++, bx + 3, "Med: %-8.1f Std: %-6.1f", med_sc, std_sc);
         r++;
 
-        if (cfg->difficulty_stage <= 5)
+        if (!is_time_rank)
             mvprintw(r++, bx + 3, "Passes: %d / %d (pass/fail scoring)", pass_count, n);
-        else
-            mvprintw(r++, bx + 3, "Time ranking mode active (lower ticks is better)");
+        else {
+            mvprintw(r++, bx + 3, "Time rank: pass > lower ticks > higher apples");
+            if (rank_order && n > 0) {
+                int bi = rank_order[0];
+                mvprintw(r++, bx + 3,
+                         "Best run: #%d  %s  ticks=%d  apples=%d",
+                         bi + 1, game_outcome_name(br->results[bi].outcome),
+                         br->results[bi].ticks, br->results[bi].apples_eaten);
+            } else {
+                mvprintw(r++, bx + 3, "Best run: unavailable");
+            }
+        }
         mvprintw(r++, bx + 3, "Avg apples eaten: %.1f", avg_eaten);
         r++;
 
@@ -1537,18 +1586,31 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
 
         /* table header */
         attron(A_BOLD);
-        mvprintw(r++, bx + 3, " #     Score    Ticks     Eaten   Result");
+        if (!is_time_rank)
+            mvprintw(r++, bx + 3, " #     Score    Ticks     Eaten   Result");
+        else
+            mvprintw(r++, bx + 3, " Rank  Game   Score    Ticks   Eaten   Result");
         attroff(A_BOLD);
 
         /* table rows */
         for (int i = 0; i < tbl_rows && scroll + i < n; i++) {
-            int idx = scroll + i;
-            mvprintw(r + i, bx + 3, " %-5d  %-6d   %-7d   %-6d  %-6s",
-                     idx + 1,
-                     br->results[idx].score,
-                     br->results[idx].ticks,
-                     br->results[idx].apples_eaten,
-                     game_outcome_name(br->results[idx].outcome));
+            int row_idx = scroll + i;
+            int idx = (is_time_rank && rank_order) ? rank_order[row_idx] : row_idx;
+            if (!is_time_rank) {
+                mvprintw(r + i, bx + 3, " %-5d  %-6d   %-7d   %-6d  %-6s",
+                         idx + 1,
+                         br->results[idx].score,
+                         br->results[idx].ticks,
+                         br->results[idx].apples_eaten,
+                         game_outcome_name(br->results[idx].outcome));
+            } else {
+                mvprintw(r + i, bx + 3, " %-5d %-5d  %-6d   %-6d  %-6d  %-6s",
+                         row_idx + 1, idx + 1,
+                         br->results[idx].score,
+                         br->results[idx].ticks,
+                         br->results[idx].apples_eaten,
+                         game_outcome_name(br->results[idx].outcome));
+            }
         }
         r += tbl_rows;
 
@@ -1613,24 +1675,51 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
                 fprintf(f, "  Minimum:  %d\n", min_tk);
                 fprintf(f, "  Median:   %.1f\n", med_tk);
                 fprintf(f, "  Std Dev:  %.1f\n\n", std_tk);
-                if (cfg->difficulty_stage <= 5)
+                if (!is_time_rank)
                     fprintf(f, "Passes: %d / %d\n", pass_count, n);
-                else
-                    fprintf(f, "Time ranking mode active (lower ticks is better)\n");
+                else {
+                    fprintf(f, "Time ranking: pass > lower ticks > higher apples\n");
+                    if (rank_order) {
+                        int topn = (n < 3) ? n : 3;
+                        fprintf(f, "Top ranked runs:\n");
+                        for (int rr = 0; rr < topn; rr++) {
+                            int idx = rank_order[rr];
+                            fprintf(f, "  #%d run %d: outcome=%s ticks=%d apples=%d\n",
+                                    rr + 1, idx + 1,
+                                    game_outcome_name(br->results[idx].outcome),
+                                    br->results[idx].ticks,
+                                    br->results[idx].apples_eaten);
+                        }
+                    }
+                }
                 fprintf(f, "Avg apples eaten: %.1f\n\n", avg_eaten);
 
                 if (br->log_path[0])
                     fprintf(f, "Action Log: %s\n\n", br->log_path);
 
                 fprintf(f, "Per-game Results\n");
-                fprintf(f, "#\tScore\tTicks\tEaten\tResult\tTime (s)\n");
-                for (int i = 0; i < n; i++)
-                    fprintf(f, "%d\t%d\t%d\t%d\t%s\t%.3f\n",
-                            i + 1, br->results[i].score,
-                            br->results[i].ticks,
-                            br->results[i].apples_eaten,
-                            game_outcome_name(br->results[i].outcome),
-                            br->results[i].elapsed);
+                if (!is_time_rank) {
+                    fprintf(f, "#\tScore\tTicks\tEaten\tResult\tTime (s)\n");
+                    for (int i = 0; i < n; i++)
+                        fprintf(f, "%d\t%d\t%d\t%d\t%s\t%.3f\n",
+                                i + 1, br->results[i].score,
+                                br->results[i].ticks,
+                                br->results[i].apples_eaten,
+                                game_outcome_name(br->results[i].outcome),
+                                br->results[i].elapsed);
+                } else {
+                    fprintf(f, "Rank\tGame\tScore\tTicks\tEaten\tResult\tTime (s)\n");
+                    for (int rr = 0; rr < n; rr++) {
+                        int idx = rank_order ? rank_order[rr] : rr;
+                        fprintf(f, "%d\t%d\t%d\t%d\t%d\t%s\t%.3f\n",
+                                rr + 1, idx + 1,
+                                br->results[idx].score,
+                                br->results[idx].ticks,
+                                br->results[idx].apples_eaten,
+                                game_outcome_name(br->results[idx].outcome),
+                                br->results[idx].elapsed);
+                    }
+                }
                 fclose(f);
 
                 /* show confirmation */
@@ -1643,12 +1732,21 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
             }
             continue;
         }
-        if (ch == 'r' || ch == 'R') { free(scores); free(ticks); free(eaten); return 1; }
-        if (ch == 'c' || ch == 'C') { free(scores); free(ticks); free(eaten); return 2; }
-        if (ch == 'q' || ch == 'Q' || ch == 27) { free(scores); free(ticks); free(eaten); return 0; }
+        if (ch == 'r' || ch == 'R') {
+            free(scores); free(ticks); free(eaten); free(rank_order);
+            return 1;
+        }
+        if (ch == 'c' || ch == 'C') {
+            free(scores); free(ticks); free(eaten); free(rank_order);
+            return 2;
+        }
+        if (ch == 'q' || ch == 'Q' || ch == 27) {
+            free(scores); free(ticks); free(eaten); free(rank_order);
+            return 0;
+        }
     }
 
-    free(scores); free(ticks); free(eaten);
+    free(scores); free(ticks); free(eaten); free(rank_order);
     return 0;
 }
 
