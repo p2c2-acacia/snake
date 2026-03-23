@@ -106,8 +106,9 @@ Scoring:
 
 ### Time ranking definition (normative for stages 6-7)
 
-- Primary ranking metric: `ticks` to terminal success/fail state.
-- Lower `ticks` ranks better.
+- Ranking precedence:
+  1. `pass` outcomes rank above `fail` outcomes.
+  2. Within same outcome class, lower `ticks` ranks better.
 - If two runs have equal ticks, higher `apples_eaten` ranks better.
 - If still tied, ordering is stable by run index (earlier run first).
 - Summary should expose at least ticks min/avg/max and pass count.
@@ -126,6 +127,21 @@ These defaults are authoritative and sourced from `settings.json`:
 - `stage7_increment_by = 1`
 - `stage7_max_apples = 8`
 - `stage7_goal_apples = 30`
+
+### Stage 7 progression algorithm (normative)
+
+- Initialize `active_apples = stage7_initial_apples`.
+- When an apple is eaten:
+  - increment `apples_eaten` by 1
+  - if `apples_eaten % stage7_increment_every == 0`, then
+    `active_apples = min(active_apples + stage7_increment_by, stage7_max_apples)`
+  - refill apples immediately until board has `active_apples` apples
+  - if `apples_eaten >= stage7_goal_apples`, mark pass and stop.
+
+### Static-mode command timing
+
+- In static agent mode, the game blocks waiting for the next agent action.
+- Timeout fallback-to-straight is non-normative for static mode and applies only to timed/non-static paths.
 
 ## Data flow
 
