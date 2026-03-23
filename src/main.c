@@ -57,6 +57,7 @@
  * ═══════════════════════════════════════════════════════════════════ */
 
 typedef enum { RUN_MENU, RUN_PLAY, RUN_AGENT_PROTO } RunMode;
+typedef enum { OUTPUT_JSON = 0, OUTPUT_RAW_BOARD = 1 } OutputMode;
 
 /* ── Dynamic agent registry ─────────────────────────────────────── */
 
@@ -85,10 +86,15 @@ typedef struct {
     int          step;           /* 0 = timed, 1 = step */
     int          watch;
     int          do_log;
+    int          difficulty_stage;
+    OutputMode   output_mode;
+    GameRules    rules;
 } AgentCfg;
 typedef struct {
     int    score;
     int    ticks;
+    int    apples_eaten;
+    GameOutcome outcome;
     double elapsed;
 } GameResult;
 
@@ -108,6 +114,23 @@ typedef struct {
     int   rd_fd;
 } ExtAgent;
 
+typedef struct {
+    int          width;
+    int          height;
+    int          speed_ms;
+    unsigned int seed;
+    int          play_step;
+    int          play_difficulty;
+    int          agent_games;
+    int          agent_watch;
+    int          agent_log;
+    int          agent_step;
+    int          agent_difficulty;
+    OutputMode   agent_output_mode;
+    char         default_agent[64];
+    GameRules    rules;
+} AppSettings;
+
 /* ═══════════════════════════════════════════════════════════════════
  * GLOBALS
  * ═══════════════════════════════════════════════════════════════════ */
@@ -116,6 +139,8 @@ static volatile sig_atomic_t g_quit    = 0;
 static volatile sig_atomic_t g_abort   = 0;   /* abort current batch */
 static int                   g_color   = 0;
 static char                  g_exe_dir[PATH_MAX] = ".";
+static AppSettings           g_settings;
+static unsigned long         g_agents_stamp = 0;
 
 /* ═══════════════════════════════════════════════════════════════════
  * AGENT REGISTRY – scan agents/ for agent.json manifests
@@ -142,6 +167,34 @@ static int json_get_str(const char *json, const char *key,
     }
     out[i] = '\0';
     return 1;
+}
+
+static int json_get_int(const char *json, const char *key, int *out) {
+    if (!json || !key || !out) return 0;
+    char pat[80];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return 0;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    if (!isdigit((unsigned char)*p) && *p != '-') return 0;
+    *out = (int)strtol(p, NULL, 10);
+    return 1;
+}
+
+static int json_get_bool(const char *json, const char *key, int *out) {
+    if (!json || !key || !out) return 0;
+    char pat[80];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return 0;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    if (strncmp(p, "true", 4) == 0) { *out = 1; return 1; }
+    if (strncmp(p, "false", 5) == 0) { *out = 0; return 1; }
+    if (*p == '1') { *out = 1; return 1; }
+    if (*p == '0') { *out = 0; return 1; }
+    return 0;
 }
 
 static void register_builtin(void) {
@@ -245,6 +298,212 @@ static int clamp(int v, int lo, int hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+static int parse_bool_text(const char *v) {
+    if (!v || !*v) return 0;
+    if (strcmp(v, "1") == 0 || strcmp(v, "true") == 0 ||
+        strcmp(v, "yes") == 0 || strcmp(v, "on") == 0)
+        return 1;
+    return 0;
+}
+
+static void init_settings_defaults(AppSettings *s) {
+    memset(s, 0, sizeof(*s));
+    game_rules_default(&s->rules);
+    s->width = 20;
+    s->height = 20;
+    s->speed_ms = 200;
+    s->seed = 0;
+    s->play_step = 0;
+    s->play_difficulty = 1;
+    s->agent_games = 1;
+    s->agent_watch = 1;
+    s->agent_log = 0;
+    s->agent_step = 1; /* static by default: waits for agent response */
+    s->agent_difficulty = 1;
+    s->agent_output_mode = OUTPUT_JSON;
+    snprintf(s->default_agent, sizeof s->default_agent, "Built-in Naive");
+}
+
+static void parse_settings_text(AppSettings *s, const char *buf) {
+    int iv = 0;
+    char sv[128] = "";
+
+    if (json_get_int(buf, "width", &iv)) s->width = clamp(iv, 5, MAX_GRID_DIM);
+    if (json_get_int(buf, "height", &iv)) s->height = clamp(iv, 5, MAX_GRID_DIM);
+    if (json_get_int(buf, "speed_ms", &iv)) s->speed_ms = clamp(iv, 10, 5000);
+    if (json_get_int(buf, "seed", &iv)) s->seed = (unsigned)clamp(iv, 0, 999999999);
+
+    if (json_get_str(buf, "play_tick_mode", sv, sizeof sv))
+        s->play_step = (strcmp(sv, "step") == 0) ? 1 : 0;
+    if (json_get_str(buf, "agent_tick_mode", sv, sizeof sv))
+        s->agent_step = (strcmp(sv, "timed") == 0) ? 0 : 1;
+    if (json_get_int(buf, "play_difficulty", &iv)) s->play_difficulty = clamp(iv, 1, 7);
+    if (json_get_int(buf, "agent_difficulty", &iv)) s->agent_difficulty = clamp(iv, 1, 7);
+    if (json_get_int(buf, "agent_games", &iv)) s->agent_games = clamp(iv, 1, 100000);
+
+    if (json_get_bool(buf, "agent_watch", &iv)) {
+        s->agent_watch = iv;
+    } else if (json_get_str(buf, "agent_watch", sv, sizeof sv)) {
+        s->agent_watch = parse_bool_text(sv);
+    }
+    if (json_get_bool(buf, "agent_log_actions", &iv)) {
+        s->agent_log = iv;
+    } else if (json_get_str(buf, "agent_log_actions", sv, sizeof sv)) {
+        s->agent_log = parse_bool_text(sv);
+    }
+    if (json_get_str(buf, "agent_output_mode", sv, sizeof sv))
+        s->agent_output_mode = (strcmp(sv, "raw_board") == 0)
+                                   ? OUTPUT_RAW_BOARD
+                                   : OUTPUT_JSON;
+    if (json_get_str(buf, "default_agent", sv, sizeof sv))
+        snprintf(s->default_agent, sizeof s->default_agent, "%s", sv);
+
+    if (json_get_int(buf, "stage2_fixed_apples", &iv))
+        s->rules.stage2_fixed_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage4_fixed_apples", &iv))
+        s->rules.stage4_fixed_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage5_goal_apples", &iv))
+        s->rules.stage5_goal_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage6_fixed_apples", &iv))
+        s->rules.stage6_fixed_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage6_goal_apples", &iv))
+        s->rules.stage6_goal_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage7_initial_apples", &iv))
+        s->rules.stage7_initial_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage7_increment_every", &iv))
+        s->rules.stage7_increment_every = clamp(iv, 1, 1000000);
+    if (json_get_int(buf, "stage7_increment_by", &iv))
+        s->rules.stage7_increment_by = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage7_max_apples", &iv))
+        s->rules.stage7_max_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage7_goal_apples", &iv))
+        s->rules.stage7_goal_apples = clamp(iv, 1, MAX_APPLES);
+}
+
+static void write_default_settings_file(const char *path, const AppSettings *s) {
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f,
+            "{\n"
+            "  \"width\": %d,\n"
+            "  \"height\": %d,\n"
+            "  \"speed_ms\": %d,\n"
+            "  \"seed\": %u,\n"
+            "  \"play_tick_mode\": \"%s\",\n"
+            "  \"agent_tick_mode\": \"%s\",\n"
+            "  \"play_difficulty\": %d,\n"
+            "  \"agent_difficulty\": %d,\n"
+            "  \"agent_games\": %d,\n"
+            "  \"agent_watch\": %s,\n"
+            "  \"agent_log_actions\": %s,\n"
+            "  \"agent_output_mode\": \"%s\",\n"
+            "  \"default_agent\": \"%s\",\n"
+            "  \"stage2_fixed_apples\": %d,\n"
+            "  \"stage4_fixed_apples\": %d,\n"
+            "  \"stage5_goal_apples\": %d,\n"
+            "  \"stage6_fixed_apples\": %d,\n"
+            "  \"stage6_goal_apples\": %d,\n"
+            "  \"stage7_initial_apples\": %d,\n"
+            "  \"stage7_increment_every\": %d,\n"
+            "  \"stage7_increment_by\": %d,\n"
+            "  \"stage7_max_apples\": %d,\n"
+            "  \"stage7_goal_apples\": %d\n"
+            "}\n",
+            s->width, s->height, s->speed_ms, s->seed,
+            s->play_step ? "step" : "timed",
+            s->agent_step ? "step" : "timed",
+            s->play_difficulty, s->agent_difficulty, s->agent_games,
+            s->agent_watch ? "true" : "false",
+            s->agent_log ? "true" : "false",
+            s->agent_output_mode == OUTPUT_RAW_BOARD ? "raw_board" : "json",
+            s->default_agent,
+            s->rules.stage2_fixed_apples,
+            s->rules.stage4_fixed_apples,
+            s->rules.stage5_goal_apples,
+            s->rules.stage6_fixed_apples,
+            s->rules.stage6_goal_apples,
+            s->rules.stage7_initial_apples,
+            s->rules.stage7_increment_every,
+            s->rules.stage7_increment_by,
+            s->rules.stage7_max_apples,
+            s->rules.stage7_goal_apples);
+    fclose(f);
+}
+
+static void load_settings(void) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, "%.900s/settings.json", g_exe_dir);
+
+    init_settings_defaults(&g_settings);
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        write_default_settings_file(path, &g_settings);
+        return;
+    }
+
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    parse_settings_text(&g_settings, buf);
+}
+
+static int settings_find_default_agent_idx(void) {
+    for (int i = 0; i < g_num_agents; i++) {
+        if (strcmp(g_agents[i].name, g_settings.default_agent) == 0)
+            return i;
+    }
+    return 0;
+}
+
+static unsigned long fold_stamp(unsigned long cur, const struct stat *st) {
+    if (!st) return cur;
+    return (cur * 1315423911u) ^ (unsigned long)st->st_mtime ^ (unsigned long)st->st_size;
+}
+
+static unsigned long agents_dir_stamp(void) {
+    struct stat st;
+    char agents_dir[PATH_MAX];
+    snprintf(agents_dir, sizeof agents_dir, "%.900s/agents", g_exe_dir);
+
+    if (stat(agents_dir, &st) != 0) {
+        snprintf(agents_dir, sizeof agents_dir, "agents");
+        if (stat(agents_dir, &st) != 0) return 0;
+    }
+
+    unsigned long stamp = fold_stamp(0x9e3779b9u, &st);
+
+    DIR *dp = opendir(agents_dir);
+    if (!dp) return stamp;
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        char subdir[PATH_MAX];
+        snprintf(subdir, sizeof subdir, "%.800s/%s", agents_dir, de->d_name);
+        if (stat(subdir, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        stamp = fold_stamp(stamp, &st);
+
+        char manifest[PATH_MAX];
+        snprintf(manifest, sizeof manifest, "%.780s/agent.json", subdir);
+        if (stat(manifest, &st) == 0) stamp = fold_stamp(stamp, &st);
+    }
+    closedir(dp);
+    return stamp;
+}
+
+static void refresh_agent_registry_if_needed(void) {
+    unsigned long cur = agents_dir_stamp();
+    if (cur == 0 || cur == g_agents_stamp) return;
+    init_agent_registry();
+    g_agents_stamp = cur;
+}
+
+static void update_rules_for_stage(GameRules *rules, int stage) {
+    if (!rules) return;
+    rules->stage = clamp(stage, 1, 7);
+}
+
 /* Resolve the directory containing our own binary. */
 static void resolve_exe_dir(const char *argv0) {
     char buf[PATH_MAX];
@@ -320,16 +579,86 @@ static void center_str(int y, int x, int w, const char *s) {
 static void write_state_json(FILE *out, const SnakeGame *g) {
     fprintf(out,
         "{\"tick\":%d,\"alive\":%s,\"score\":%d,"
+        "\"apples_eaten\":%d,\"goal_apples\":%d,"
+        "\"difficulty\":%d,\"outcome\":\"%s\",\"score_mode\":\"%s\","
         "\"width\":%d,\"height\":%d,\"dir\":\"%s\",\"snake\":[",
         g->tick, g->alive ? "true" : "false", g->score,
+        g->apples_eaten, g->goal_apples, g->rules.stage,
+        game_outcome_name(g->outcome), game_score_mode_name(g->score_mode),
         g->width, g->height, direction_name(g->dir));
     for (int i = 0; i < g->snake_len; i++) {
         int idx = (g->head_idx - i + MAX_SNAKE_LEN) % MAX_SNAKE_LEN;
         fprintf(out, "%s[%d,%d]", i ? "," : "",
                 g->body[idx].x, g->body[idx].y);
     }
+    fprintf(out, "],\"apples\":[");
+    for (int i = 0; i < g->apple_count; i++) {
+        fprintf(out, "%s[%d,%d]", i ? "," : "",
+                g->apples[i].x, g->apples[i].y);
+    }
     fprintf(out, "],\"food\":[%d,%d]}\n", g->food.x, g->food.y);
     fflush(out);
+}
+
+static void write_state_raw_board(FILE *out, const SnakeGame *g) {
+    char board[MAX_GRID_DIM][MAX_GRID_DIM];
+    memset(board, '.', sizeof(board));
+
+    for (int y = 0; y < g->height; y++) {
+        for (int x = 0; x < g->width; x++) {
+            if (g->grid[y][x] == CELL_FOOD) board[y][x] = '*';
+        }
+    }
+
+    for (int i = 1; i < g->snake_len; i++) {
+        int idx = (g->head_idx - i + MAX_SNAKE_LEN) % MAX_SNAKE_LEN;
+        Point p = g->body[idx];
+        if (p.x >= 0 && p.x < g->width && p.y >= 0 && p.y < g->height)
+            board[p.y][p.x] = 'o';
+    }
+
+    {
+        Point h = g->body[g->head_idx];
+        if (h.x >= 0 && h.x < g->width && h.y >= 0 && h.y < g->height)
+            board[h.y][h.x] = '@';
+    }
+
+    fprintf(out,
+            "STATE_BEGIN\n"
+            "tick:%d\n"
+            "alive:%s\n"
+            "score:%d\n"
+            "apples_eaten:%d\n"
+            "goal_apples:%d\n"
+            "difficulty:%d\n"
+            "outcome:%s\n"
+            "score_mode:%s\n"
+            "width:%d\n"
+            "height:%d\n"
+            "dir:%s\n"
+            "board:\n",
+            g->tick, g->alive ? "true" : "false", g->score, g->apples_eaten,
+            g->goal_apples, g->rules.stage, game_outcome_name(g->outcome),
+            game_score_mode_name(g->score_mode), g->width, g->height,
+            direction_name(g->dir));
+    fputc('+', out);
+    for (int x = 0; x < g->width; x++) fputc('-', out);
+    fputs("+\n", out);
+    for (int y = 0; y < g->height; y++) {
+        fputc('|', out);
+        for (int x = 0; x < g->width; x++)
+            fputc(board[y][x], out);
+        fputs("|\n", out);
+    }
+    fputc('+', out);
+    for (int x = 0; x < g->width; x++) fputc('-', out);
+    fputs("+\nSTATE_END\n", out);
+    fflush(out);
+}
+
+static void write_state(FILE *out, const SnakeGame *g, OutputMode mode) {
+    if (mode == OUTPUT_RAW_BOARD) write_state_raw_board(out, g);
+    else write_state_json(out, g);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -351,19 +680,20 @@ static Turn read_cmd_timed(int ms) {
 }
 
 static void run_agent_proto(int width, int height, unsigned int seed,
-                            int step, int speed_ms) {
+                            int step, int speed_ms, OutputMode output_mode,
+                            const GameRules *rules) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stdin,  NULL, _IOLBF, 0);
     static SnakeGame game;
-    game_init(&game, width, height, seed);
+    game_init_with_rules(&game, width, height, seed, rules);
     while (game.alive && !g_quit) {
-        write_state_json(stdout, &game);
+        write_state(stdout, &game, output_mode);
         Turn t = step ? read_cmd_blocking() : read_cmd_timed(speed_ms);
         if (g_quit) break;
         game_set_turn(&game, t);
         game_tick(&game);
     }
-    write_state_json(stdout, &game);
+    write_state(stdout, &game, output_mode);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -398,12 +728,13 @@ static void draw_game(const SnakeGame *g, const char *title_extra) {
     mvaddch(oy + g->height + 1, g->width + 1, ACS_LRCORNER);
     if (g_color) attroff(COLOR_PAIR(CP_BORDER));
 
-    /* food */
-    if (g->food.x >= 0) {
-        if (g_color) attron(COLOR_PAIR(CP_FOOD) | A_BOLD);
-        mvaddch(oy + g->food.y + 1, g->food.x + 1, '*');
-        if (g_color) attroff(COLOR_PAIR(CP_FOOD) | A_BOLD);
+    /* apples */
+    if (g_color) attron(COLOR_PAIR(CP_FOOD) | A_BOLD);
+    for (int i = 0; i < g->apple_count; i++) {
+        Point a = g->apples[i];
+        mvaddch(oy + a.y + 1, a.x + 1, '*');
     }
+    if (g_color) attroff(COLOR_PAIR(CP_FOOD) | A_BOLD);
 
     /* snake body */
     if (g_color) attron(COLOR_PAIR(CP_SNAKE));
@@ -432,6 +763,7 @@ static int show_main_menu(void) {
     int n = 3, sel = 0;
 
     while (!g_quit) {
+        refresh_agent_registry_if_needed();
         erase();
         int bw = 36, bh = n + 6;
         int bx = (COLS - bw) / 2, by = (LINES - bh) / 2;
@@ -687,9 +1019,12 @@ static int is_game_key(int ch) {
 }
 
 static void run_play(int width, int height, int speed_ms,
-                     unsigned int seed, int step) {
+                     unsigned int seed, int step, int difficulty_stage,
+                     const GameRules *rules_base) {
     static SnakeGame game;
-    game_init(&game, width, height, seed);
+    GameRules rules = *rules_base;
+    update_rules_for_stage(&rules, difficulty_stage);
+    game_init_with_rules(&game, width, height, seed, &rules);
 
     while (game.alive && !g_quit) {
         erase();
@@ -702,6 +1037,10 @@ static void run_play(int width, int height, int speed_ms,
             mvprintw(sy, 0, "Mode: Timed (%d ms)", speed_ms);
         mvprintw(sy + 1, 0,
                  "Controls: Arrow keys / WASD | Space/Enter: straight | Q: quit");
+        mvprintw(sy + 2, 0,
+                 "Difficulty: %d  Apples: %d  Eaten: %d  Goal: %d",
+                 game.rules.stage, game.apple_count, game.apples_eaten,
+                 game.goal_apples);
         refresh();
 
         if (step) {
@@ -728,8 +1067,9 @@ done:
         draw_game(&game, NULL);
         int sy = game.height + 4;
         attron(A_BOLD | A_REVERSE);
-        mvprintw(sy, 0, " GAME OVER!  Score: %d  Ticks: %d ",
-                 game.score, game.tick);
+        mvprintw(sy, 0, " %s! Score: %d Ticks: %d Eaten: %d ",
+                 game.outcome == GAME_OUTCOME_PASS ? "PASS" : "FAIL",
+                 game.score, game.tick, game.apples_eaten);
         attroff(A_BOLD | A_REVERSE);
         mvprintw(sy + 1, 0, "Press any key...");
         refresh();
@@ -747,17 +1087,24 @@ static void show_play_config(void) {
     static const char *tick_opts[] = { "Timed", "Step" };
 
     FField ff[] = {
-        { "Width",     1, 20, 5, 100, 1, 5, NULL, 0, NULL, "", 1 },
-        { "Height",    1, 20, 5, 100, 1, 5, NULL, 0, NULL, "", 1 },
-        { "Speed",     1, 200, 10, 5000, 10, 50, NULL, 0, "ms", "", 1 },
-        { "Seed",      1, 0, 0, 999999, 1, 100, NULL, 0, NULL, "", 1 },
-        { "Tick Mode", 0, 0, 0, 0, 0, 0, tick_opts, 2, NULL, "", 1 },
+        { "Width",      1, g_settings.width, 5, 100, 1, 5, NULL, 0, NULL, "", 1 },
+        { "Height",     1, g_settings.height, 5, 100, 1, 5, NULL, 0, NULL, "", 1 },
+        { "Speed",      1, g_settings.speed_ms, 10, 5000, 10, 50, NULL, 0, "ms", "", 1 },
+        { "Seed",       1, (int)g_settings.seed, 0, 999999, 1, 100, NULL, 0, NULL, "", 1 },
+        { "Tick Mode",  0, g_settings.play_step ? 1 : 0, 0, 0, 0, 0, tick_opts, 2, NULL, "", 1 },
+        { "Difficulty", 1, g_settings.play_difficulty, 1, 7, 1, 1, NULL, 0, NULL, "", 1 },
     };
     int nf = sizeof ff / sizeof ff[0];
 
     if (show_form("PLAY SETTINGS", ff, nf, "PgUp/PgDn or </>: big steps")) {
+        g_settings.width = ff[0].val;
+        g_settings.height = ff[1].val;
+        g_settings.speed_ms = ff[2].val;
+        g_settings.seed = (unsigned)ff[3].val;
+        g_settings.play_step = ff[4].val;
+        g_settings.play_difficulty = ff[5].val;
         run_play(ff[0].val, ff[1].val, ff[2].val,
-                 (unsigned)ff[3].val, ff[4].val);
+                 (unsigned)ff[3].val, ff[4].val, ff[5].val, &g_settings.rules);
     }
 }
 
@@ -805,6 +1152,7 @@ static ExtAgent *start_ext_agent(const char *cmd) {
 }
 
 static Turn read_ext_turn(ExtAgent *ea, int timeout_ms) {
+    if (timeout_ms < 0) timeout_ms = -1;
     struct pollfd pfd = { .fd = ea->rd_fd, .events = POLLIN };
     int r = poll(&pfd, 1, timeout_ms);
     if (r > 0 && (pfd.revents & POLLIN)) {
@@ -864,7 +1212,9 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
 
     for (int g = 0; g < cfg->num_games && !g_abort; g++) {
         unsigned int seed = cfg->seed ? cfg->seed + (unsigned)g : 0;
-        game_init(&game, cfg->width, cfg->height, seed);
+        GameRules rules = cfg->rules;
+        update_rules_for_stage(&rules, cfg->difficulty_stage);
+        game_init_with_rules(&game, cfg->width, cfg->height, seed, &rules);
 
         /* start external agent for this game */
         ExtAgent *ea = NULL;
@@ -890,18 +1240,21 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
             if (ae->is_builtin) {
                 t = naive_agent_decide(&game);
             } else {
-                write_state_json(ea->wr, &game);
-                t = read_ext_turn(ea, 5000); /* 5s timeout */
+                write_state(ea->wr, &game, cfg->output_mode);
+                t = cfg->step ? read_ext_turn(ea, -1) : read_ext_turn(ea, 5000);
             }
 
             /* ── Log ──────────────────────────────────────── */
             if (logfp) {
                 fprintf(logfp,
                     "{\"game\":%d,\"tick\":%d,\"action\":\"%s\","
-                    "\"score\":%d,\"dir\":\"%s\","
+                    "\"score\":%d,\"apples_eaten\":%d,"
+                    "\"difficulty\":%d,\"outcome\":\"%s\",\"dir\":\"%s\","
                     "\"head\":[%d,%d],\"food\":[%d,%d],\"alive\":true}\n",
                     g + 1, game.tick, turn_name(t),
-                    game.score, direction_name(game.dir),
+                    game.score, game.apples_eaten,
+                    game.rules.stage, game_outcome_name(game.outcome),
+                    direction_name(game.dir),
                     game.body[game.head_idx].x, game.body[game.head_idx].y,
                     game.food.x, game.food.y);
             }
@@ -924,6 +1277,10 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
                 mvprintw(sy, 0,
                     "Q/Esc: Abort  N: Next game  Space: Pause"
                     "  +/-: Speed (%d ms)", cfg->speed_ms);
+                mvprintw(sy + 1, 0,
+                    "Difficulty: %d  Apples: %d  Eaten: %d  Goal: %d  Output: %s",
+                    game.rules.stage, game.apple_count, game.apples_eaten, game.goal_apples,
+                    cfg->output_mode == OUTPUT_RAW_BOARD ? "raw_board" : "json");
                 refresh();
 
                 /* handle input using timeout for frame pacing */
@@ -962,6 +1319,9 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
                     int r = by + 3;
                     mvprintw(r++, bx + 3, "Agent:  %s", g_agents[cfg->agent_idx].name);
                     mvprintw(r++, bx + 3, "Grid:   %d x %d", cfg->width, cfg->height);
+                    mvprintw(r++, bx + 3, "Difficulty: %d   Output: %s",
+                             cfg->difficulty_stage,
+                             cfg->output_mode == OUTPUT_RAW_BOARD ? "raw_board" : "json");
                     r++;
                     mvprintw(r++, bx + 3, "Game %d of %d  (tick %d)",
                              g + 1, cfg->num_games, game.tick);
@@ -1009,23 +1369,28 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
         if (logfp) {
             fprintf(logfp,
                 "{\"game\":%d,\"tick\":%d,\"action\":null,"
-                "\"score\":%d,\"dir\":\"%s\","
+                "\"score\":%d,\"apples_eaten\":%d,"
+                "\"difficulty\":%d,\"outcome\":\"%s\",\"dir\":\"%s\","
                 "\"head\":[%d,%d],\"food\":[%d,%d],\"alive\":false}\n",
                 g + 1, game.tick,
-                game.score, direction_name(game.dir),
+                game.score, game.apples_eaten,
+                game.rules.stage, game_outcome_name(game.outcome),
+                direction_name(game.dir),
                 game.body[game.head_idx].x, game.body[game.head_idx].y,
                 game.food.x, game.food.y);
         }
 
         /* send dead state to external agent, then stop it */
         if (ea) {
-            write_state_json(ea->wr, &game);
+            write_state(ea->wr, &game, cfg->output_mode);
             stop_ext_agent(ea);
             ea = NULL;
         }
 
         br->results[g].score   = game.score;
         br->results[g].ticks   = game.tick;
+        br->results[g].apples_eaten = game.apples_eaten;
+        br->results[g].outcome = game.outcome;
         br->results[g].elapsed = now_sec() - gt0;
         br->completed = g + 1;
     }
@@ -1072,13 +1437,17 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
     /* gather stats */
     int *scores = malloc((size_t)n * sizeof(int));
     int *ticks  = malloc((size_t)n * sizeof(int));
-    int sum_sc = 0, sum_tk = 0, max_sc = 0, min_sc = scores ? scores[0] : 0;
+    int *eaten  = malloc((size_t)n * sizeof(int));
+    int sum_sc = 0, sum_tk = 0, sum_eaten = 0, max_sc = 0, min_sc = scores ? scores[0] : 0;
     int max_tk = 0, min_tk = 0;
+    int pass_count = 0;
 
     for (int i = 0; i < n; i++) {
         scores[i] = br->results[i].score;
         ticks[i]  = br->results[i].ticks;
-        sum_sc += scores[i]; sum_tk += ticks[i];
+        eaten[i]  = br->results[i].apples_eaten;
+        sum_sc += scores[i]; sum_tk += ticks[i]; sum_eaten += eaten[i];
+        if (br->results[i].outcome == GAME_OUTCOME_PASS) pass_count++;
         if (i == 0 || scores[i] > max_sc) max_sc = scores[i];
         if (i == 0 || scores[i] < min_sc) min_sc = scores[i];
         if (i == 0 || ticks[i]  > max_tk) max_tk = ticks[i];
@@ -1086,6 +1455,7 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
     }
     double avg_sc = (double)sum_sc / n;
     double avg_tk = (double)sum_tk / n;
+    double avg_eaten = (double)sum_eaten / n;
     double med_sc = calc_median(scores, n);
     double med_tk = calc_median(ticks, n);
     double std_sc = calc_stddev(scores, n, avg_sc);
@@ -1098,8 +1468,8 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
         erase();
 
         int bw = 56;
-        /* top stats area: ~16 rows, per-game table: tbl_rows + 2, controls: 3 */
-        int stats_h = 16;
+        /* top stats area: ~18 rows, per-game table: tbl_rows + 2, controls: 3 */
+        int stats_h = 18;
         int bh = stats_h + tbl_rows + 5;
         int bx = (COLS - bw) / 2, by = 0;
         if (LINES > bh + 2) by = (LINES - bh) / 2;
@@ -1121,6 +1491,9 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
                  n, cfg->num_games, br->total_time);
         mvprintw(r++, bx + 3, "Grid:     %d x %d      Speed: %d ms",
                  cfg->width, cfg->height, cfg->speed_ms);
+        mvprintw(r++, bx + 3, "Stage:    %d           Output: %s",
+                 cfg->difficulty_stage,
+                 cfg->output_mode == OUTPUT_RAW_BOARD ? "raw_board" : "json");
         r++;
 
         /* scores */
@@ -1130,6 +1503,13 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
         mvprintw(r++, bx + 3, "Avg: %-8.1f Max: %-6d Min: %-6d",
                  avg_sc, max_sc, min_sc);
         mvprintw(r++, bx + 3, "Med: %-8.1f Std: %-6.1f", med_sc, std_sc);
+        r++;
+
+        if (cfg->difficulty_stage <= 5)
+            mvprintw(r++, bx + 3, "Passes: %d / %d (pass/fail scoring)", pass_count, n);
+        else
+            mvprintw(r++, bx + 3, "Time ranking mode active (lower ticks is better)");
+        mvprintw(r++, bx + 3, "Avg apples eaten: %.1f", avg_eaten);
         r++;
 
         /* ticks */
@@ -1157,17 +1537,18 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
 
         /* table header */
         attron(A_BOLD);
-        mvprintw(r++, bx + 3, " #     Score    Ticks     Time");
+        mvprintw(r++, bx + 3, " #     Score    Ticks     Eaten   Result");
         attroff(A_BOLD);
 
         /* table rows */
         for (int i = 0; i < tbl_rows && scroll + i < n; i++) {
             int idx = scroll + i;
-            mvprintw(r + i, bx + 3, " %-5d  %-6d   %-7d   %.3f s",
+            mvprintw(r + i, bx + 3, " %-5d  %-6d   %-7d   %-6d  %-6s",
                      idx + 1,
                      br->results[idx].score,
                      br->results[idx].ticks,
-                     br->results[idx].elapsed);
+                     br->results[idx].apples_eaten,
+                     game_outcome_name(br->results[idx].outcome));
         }
         r += tbl_rows;
 
@@ -1213,6 +1594,9 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
                 fprintf(f, "Games:     %d of %d\n", n, cfg->num_games);
                 fprintf(f, "Grid:      %d x %d\n", cfg->width, cfg->height);
                 fprintf(f, "Speed:     %d ms\n", cfg->speed_ms);
+                fprintf(f, "Stage:     %d\n", cfg->difficulty_stage);
+                fprintf(f, "Output:    %s\n",
+                        cfg->output_mode == OUTPUT_RAW_BOARD ? "raw_board" : "json");
                 fprintf(f, "Tick Mode: %s\n", cfg->step ? "Step" : "Timed");
                 fprintf(f, "Duration:  %.1f s\n\n", br->total_time);
 
@@ -1229,16 +1613,23 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
                 fprintf(f, "  Minimum:  %d\n", min_tk);
                 fprintf(f, "  Median:   %.1f\n", med_tk);
                 fprintf(f, "  Std Dev:  %.1f\n\n", std_tk);
+                if (cfg->difficulty_stage <= 5)
+                    fprintf(f, "Passes: %d / %d\n", pass_count, n);
+                else
+                    fprintf(f, "Time ranking mode active (lower ticks is better)\n");
+                fprintf(f, "Avg apples eaten: %.1f\n\n", avg_eaten);
 
                 if (br->log_path[0])
                     fprintf(f, "Action Log: %s\n\n", br->log_path);
 
                 fprintf(f, "Per-game Results\n");
-                fprintf(f, "#\tScore\tTicks\tTime (s)\n");
+                fprintf(f, "#\tScore\tTicks\tEaten\tResult\tTime (s)\n");
                 for (int i = 0; i < n; i++)
-                    fprintf(f, "%d\t%d\t%d\t%.3f\n",
+                    fprintf(f, "%d\t%d\t%d\t%d\t%s\t%.3f\n",
                             i + 1, br->results[i].score,
                             br->results[i].ticks,
+                            br->results[i].apples_eaten,
+                            game_outcome_name(br->results[i].outcome),
                             br->results[i].elapsed);
                 fclose(f);
 
@@ -1252,12 +1643,12 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
             }
             continue;
         }
-        if (ch == 'r' || ch == 'R') { free(scores); free(ticks); return 1; }
-        if (ch == 'c' || ch == 'C') { free(scores); free(ticks); return 2; }
-        if (ch == 'q' || ch == 'Q' || ch == 27) { free(scores); free(ticks); return 0; }
+        if (ch == 'r' || ch == 'R') { free(scores); free(ticks); free(eaten); return 1; }
+        if (ch == 'c' || ch == 'C') { free(scores); free(ticks); free(eaten); return 2; }
+        if (ch == 'q' || ch == 'Q' || ch == 27) { free(scores); free(ticks); free(eaten); return 0; }
     }
 
-    free(scores); free(ticks);
+    free(scores); free(ticks); free(eaten);
     return 0;
 }
 
@@ -1266,40 +1657,54 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 static void agent_mode(void) {
-    static const char *tick_opts[]  = { "Timed", "Step" };
+    static const char *tick_opts[]  = { "Step (static)" };
     static const char *yesno_opts[] = { "No", "Yes" };
+    static const char *output_opts[] = { "json", "raw_board" };
 
     /* Field indices */
     enum {
         F_AGENT, F_CMD, F_GAMES, F_WIDTH, F_HEIGHT,
-        F_SPEED, F_SEED, F_TICK, F_WATCH, F_LOG, F_COUNT
+        F_SPEED, F_SEED, F_TICK, F_WATCH, F_LOG, F_DIFFICULTY, F_OUTPUT, F_COUNT
     };
 
     FField ff[F_COUNT];
     memset(ff, 0, sizeof ff);
 
-    ff[F_AGENT]  = (FField){ "Agent",     0, 0, 0, g_num_agents - 1, 1, 1,
-                             g_agent_names, g_num_agents, NULL, "", 1 };
+    ff[F_AGENT]  = (FField){ "Agent",     0, settings_find_default_agent_idx(), 0, g_num_agents - 1, 1, 1,
+                              g_agent_names, g_num_agents, NULL, "", 1 };
     ff[F_CMD]    = (FField){ "Command",   2, 0, 0, 0, 0, 0,
-                             NULL, 0, NULL, "", 0 };  /* hidden initially */
-    ff[F_GAMES]  = (FField){ "Games",     1, 1, 1, 100000, 1, 10,
-                             NULL, 0, NULL, "", 1 };
-    ff[F_WIDTH]  = (FField){ "Width",     1, 20, 5, 100, 1, 5,
-                             NULL, 0, NULL, "", 1 };
-    ff[F_HEIGHT] = (FField){ "Height",    1, 20, 5, 100, 1, 5,
-                             NULL, 0, NULL, "", 1 };
-    ff[F_SPEED]  = (FField){ "Speed",     1, 200, 10, 5000, 10, 50,
-                             NULL, 0, "ms", "", 1 };
-    ff[F_SEED]   = (FField){ "Seed",      1, 0, 0, 999999, 1, 100,
-                             NULL, 0, NULL, "", 1 };
-    ff[F_TICK]   = (FField){ "Tick Mode", 0, 0, 0, 1, 0, 0,
-                             tick_opts, 2, NULL, "", 1 };
-    ff[F_WATCH]  = (FField){ "Watch",     0, 1, 0, 1, 0, 0,
-                             yesno_opts, 2, NULL, "", 1 };
-    ff[F_LOG]    = (FField){ "Log Actions", 0, 0, 0, 1, 0, 0,
-                             yesno_opts, 2, NULL, "", 1 };
+                              NULL, 0, NULL, "", 0 };  /* hidden initially */
+    if (ff[F_AGENT].val < g_num_agents && g_agents[ff[F_AGENT].val].is_custom)
+        snprintf(ff[F_CMD].text, sizeof ff[F_CMD].text, "python3 agent.py --pipe");
+    ff[F_GAMES]  = (FField){ "Games",     1, g_settings.agent_games, 1, 100000, 1, 10,
+                              NULL, 0, NULL, "", 1 };
+    ff[F_WIDTH]  = (FField){ "Width",     1, g_settings.width, 5, 100, 1, 5,
+                              NULL, 0, NULL, "", 1 };
+    ff[F_HEIGHT] = (FField){ "Height",    1, g_settings.height, 5, 100, 1, 5,
+                              NULL, 0, NULL, "", 1 };
+    ff[F_SPEED]  = (FField){ "Speed",     1, g_settings.speed_ms, 10, 5000, 10, 50,
+                              NULL, 0, "ms", "", 1 };
+    ff[F_SEED]   = (FField){ "Seed",      1, (int)g_settings.seed, 0, 999999, 1, 100,
+                              NULL, 0, NULL, "", 1 };
+    ff[F_TICK]   = (FField){ "Tick Mode", 0, 0, 0, 0, 0, 0,
+                              tick_opts, 1, NULL, "", 0 };
+    ff[F_WATCH]  = (FField){ "Watch",     0, g_settings.agent_watch ? 1 : 0, 0, 1, 0, 0,
+                              yesno_opts, 2, NULL, "", 1 };
+    ff[F_LOG]    = (FField){ "Log Actions", 0, g_settings.agent_log ? 1 : 0, 0, 1, 0, 0,
+                              yesno_opts, 2, NULL, "", 1 };
+    ff[F_DIFFICULTY] = (FField){ "Difficulty", 1, g_settings.agent_difficulty, 1, 7, 1, 1,
+                                 NULL, 0, NULL, "", 1 };
+    ff[F_OUTPUT] = (FField){ "Output", 0,
+                             g_settings.agent_output_mode == OUTPUT_RAW_BOARD ? 1 : 0,
+                             0, 1, 0, 0, output_opts, 2, NULL, "", 1 };
 
     while (1) {
+        refresh_agent_registry_if_needed();
+        ff[F_AGENT].opts = g_agent_names;
+        ff[F_AGENT].nopts = g_num_agents;
+        ff[F_AGENT].hi = g_num_agents - 1;
+        ff[F_AGENT].val = clamp(ff[F_AGENT].val, 0, g_num_agents - 1);
+
         /* update command field visibility */
         ff[F_CMD].visible = g_agents[ff[F_AGENT].val].is_custom;
 
@@ -1316,12 +1721,28 @@ static void agent_mode(void) {
         ac.height    = ff[F_HEIGHT].val;
         ac.speed_ms  = ff[F_SPEED].val;
         ac.seed      = (unsigned)ff[F_SEED].val;
-        ac.step      = ff[F_TICK].val;
+        ac.step      = 1; /* static: wait for each agent response */
         ac.watch     = ff[F_WATCH].val;
         ac.do_log    = ff[F_LOG].val;
+        ac.difficulty_stage = ff[F_DIFFICULTY].val;
+        ac.output_mode = ff[F_OUTPUT].val ? OUTPUT_RAW_BOARD : OUTPUT_JSON;
+        ac.rules = g_settings.rules;
         if (g_agents[ac.agent_idx].is_custom)
             snprintf(ac.cmd, sizeof ac.cmd, "%.*s",
                      (int)(sizeof ac.cmd - 1), ff[F_CMD].text);
+
+        g_settings.agent_games = ac.num_games;
+        g_settings.width = ac.width;
+        g_settings.height = ac.height;
+        g_settings.speed_ms = ac.speed_ms;
+        g_settings.seed = ac.seed;
+        g_settings.agent_step = 1;
+        g_settings.agent_watch = ac.watch;
+        g_settings.agent_log = ac.do_log;
+        g_settings.agent_difficulty = ac.difficulty_stage;
+        g_settings.agent_output_mode = ac.output_mode;
+        snprintf(g_settings.default_agent, sizeof g_settings.default_agent,
+                 "%s", g_agents[ac.agent_idx].name);
 
         /* run loop: run → summary → run again / reconfigure / menu */
         while (1) {
@@ -1344,19 +1765,15 @@ static void agent_mode(void) {
 
 static void print_usage(const char *prog) {
     printf(
-        "Usage: %s [play|agent] [options]\n\n"
+        "Usage: %s [play|agent]\n\n"
         "No arguments → interactive menu.\n\n"
+        "Configuration is loaded from settings.json and in-program menus.\n"
+        "CLI configuration options are disabled by design.\n\n"
         "Modes:\n"
         "  play      Interactive TUI\n"
-        "  agent     JSON line-protocol on stdin/stdout\n\n"
-        "Options:\n"
-        "  --step        Advance per input  (default for agent)\n"
-        "  --timed       Advance per timer  (default for play)\n"
-        "  --speed  N    Tick interval ms   (default: 200)\n"
-        "  --width  N    Grid width         (default: 20)\n"
-        "  --height N    Grid height        (default: 20)\n"
-        "  --seed   N    Random seed        (default: 0 = time)\n"
-        "  --help        Show this message\n",
+        "  agent     Agent protocol on stdin/stdout (json or raw_board)\n\n"
+        "Note: Agent mode is static by default (waits for each action).\n"
+        "Use --help to show this message.\n",
         prog);
 }
 
@@ -1364,31 +1781,39 @@ int main(int argc, char *argv[]) {
     signal(SIGINT,  handle_sig);
     signal(SIGTERM, handle_sig);
     resolve_exe_dir(argv[0]);
+    load_settings();
     init_agent_registry();
+    g_agents_stamp = agents_dir_stamp();
 
     /* ── Detect CLI mode ────────────────────────────────────── */
     RunMode mode = RUN_MENU;
-    int width = 20, height = 20, speed_ms = 200, step = -1;
-    unsigned int seed = 0;
+    int width = g_settings.width;
+    int height = g_settings.height;
+    int speed_ms = g_settings.speed_ms;
+    int difficulty = g_settings.play_difficulty;
+    OutputMode output_mode = g_settings.agent_output_mode;
+    unsigned int seed = g_settings.seed;
 
     int i = 1;
+    if (i < argc && (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)) {
+        print_usage(argv[0]);
+        return 0;
+    }
     if (i < argc && argv[i][0] != '-') {
         if      (strcmp(argv[i], "play")  == 0) mode = RUN_PLAY;
-        else if (strcmp(argv[i], "agent") == 0) mode = RUN_AGENT_PROTO;
+        else if (strcmp(argv[i], "agent") == 0) {
+            mode = RUN_AGENT_PROTO;
+            difficulty = g_settings.agent_difficulty;
+        }
         else { fprintf(stderr, "Unknown mode: %s\n", argv[i]); print_usage(argv[0]); return 1; }
         i++;
     }
     for (; i < argc; i++) {
-        if      (strcmp(argv[i], "--step")  == 0) step = 1;
-        else if (strcmp(argv[i], "--timed") == 0) step = 0;
-        else if (strcmp(argv[i], "--speed")  == 0 && i + 1 < argc) speed_ms = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--width")  == 0 && i + 1 < argc) width = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc) height = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--seed")   == 0 && i + 1 < argc) seed = (unsigned)atoi(argv[++i]);
-        else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]); return 0;
         } else {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            fprintf(stderr, "CLI option '%s' is disabled.\n", argv[i]);
+            fprintf(stderr, "Edit settings.json or use the in-program menu instead.\n");
             print_usage(argv[0]); return 1;
         }
     }
@@ -1398,11 +1823,13 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Grid dimensions must be in 5..%d\n", MAX_GRID_DIM);
         return 1;
     }
+    difficulty = clamp(difficulty, 1, 7);
 
     /* ── Agent protocol mode (no ncurses) ───────────────────── */
     if (mode == RUN_AGENT_PROTO) {
-        if (step == -1) step = 1;
-        run_agent_proto(width, height, seed, step, speed_ms);
+        GameRules rules = g_settings.rules;
+        update_rules_for_stage(&rules, difficulty);
+        run_agent_proto(width, height, seed, 1, speed_ms, output_mode, &rules);
         return 0;
     }
 
@@ -1415,11 +1842,12 @@ int main(int argc, char *argv[]) {
     init_colors();
 
     if (mode == RUN_PLAY) {
-        if (step == -1) step = 0;
-        run_play(width, height, speed_ms, seed, step);
+        run_play(width, height, speed_ms, seed,
+                 g_settings.play_step ? 1 : 0, difficulty, &g_settings.rules);
     } else {
         /* interactive menu loop */
         while (!g_quit) {
+            refresh_agent_registry_if_needed();
             int choice = show_main_menu();
             switch (choice) {
             case 0: show_play_config(); break;
