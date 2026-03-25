@@ -63,23 +63,18 @@ def choose_action(state: dict) -> str:
     - pick one at random.
     """
     # High-level notes for beginners:
-    # - The agent inspects the current snake, food, and board size.
+    # - The agent inspects the current snake, apples, and board size.
     # - For each candidate turn (straight/left/right) it checks for collisions
     #   with walls or the snake body and rejects unsafe moves.
-    # - If the next cell contains food, we allow moving there even if it's the
-    #   current tail (tail won't be discarded when eating).
+    # - If the next cell contains an apple, we allow moving there even if it's
+    #   the current tail (tail won't be discarded when eating).
     snake = [tuple(p) for p in state.get("snake", [])]
     if not snake:
         return "straight"
     head = snake[0]
     body = set(snake)
 
-    apples = state.get("apples")
-    if isinstance(apples, list) and apples:
-        apple_set = {tuple(a) for a in apples}
-    else:
-        food = state.get("food", [-1, -1])
-        apple_set = {tuple(food)}
+    apple_set = {tuple(a) for a in state.get("apples", [])}
 
     w = int(state.get("width", 0))
     h = int(state.get("height", 0))

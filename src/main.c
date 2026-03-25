@@ -45,7 +45,7 @@
 #define CP_SELECT   2
 #define CP_SNAKE    3
 #define CP_HEAD     4
-#define CP_FOOD     5
+#define CP_APPLE     5
 #define CP_BORDER   6
 #define CP_INFO     7
 #define CP_GOOD     8
@@ -534,7 +534,7 @@ static void init_colors(void) {
         init_pair(CP_SELECT, COLOR_BLACK,  COLOR_WHITE);
         init_pair(CP_SNAKE,  COLOR_GREEN,  -1);
         init_pair(CP_HEAD,   COLOR_YELLOW, -1);
-        init_pair(CP_FOOD,   COLOR_RED,    -1);
+        init_pair(CP_APPLE,   COLOR_RED,    -1);
         init_pair(CP_BORDER, COLOR_WHITE,  -1);
         init_pair(CP_INFO,   COLOR_CYAN,   -1);
         init_pair(CP_GOOD,   COLOR_GREEN,  -1);
@@ -596,7 +596,7 @@ static void write_state_json(FILE *out, const SnakeGame *g) {
         fprintf(out, "%s[%d,%d]", i ? "," : "",
                 g->apples[i].x, g->apples[i].y);
     }
-    fprintf(out, "],\"food\":[%d,%d]}\n", g->food.x, g->food.y);
+    fprintf(out, "]}\n");
     fflush(out);
 }
 
@@ -606,7 +606,7 @@ static void write_state_raw_board(FILE *out, const SnakeGame *g) {
 
     for (int y = 0; y < g->height; y++) {
         for (int x = 0; x < g->width; x++) {
-            if (g->grid[y][x] == CELL_FOOD) board[y][x] = '*';
+            if (g->grid[y][x] == CELL_APPLE) board[y][x] = '*';
         }
     }
 
@@ -656,9 +656,10 @@ static void write_state_raw_board(FILE *out, const SnakeGame *g) {
     fflush(out);
 }
 
-static void write_state(FILE *out, const SnakeGame *g, OutputMode mode) {
+static int write_state(FILE *out, const SnakeGame *g, OutputMode mode) {
     if (mode == OUTPUT_RAW_BOARD) write_state_raw_board(out, g);
     else write_state_json(out, g);
+    return ferror(out) ? -1 : 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -687,7 +688,7 @@ static void run_agent_proto(int width, int height, unsigned int seed,
     static SnakeGame game;
     game_init_with_rules(&game, width, height, seed, rules);
     while (game.alive && !g_quit) {
-        write_state(stdout, &game, output_mode);
+        if (write_state(stdout, &game, output_mode) < 0) break;
         Turn t = step ? read_cmd_blocking() : read_cmd_timed(speed_ms);
         if (g_quit) break;
         game_set_turn(&game, t);
@@ -729,12 +730,12 @@ static void draw_game(const SnakeGame *g, const char *title_extra) {
     if (g_color) attroff(COLOR_PAIR(CP_BORDER));
 
     /* apples */
-    if (g_color) attron(COLOR_PAIR(CP_FOOD) | A_BOLD);
+    if (g_color) attron(COLOR_PAIR(CP_APPLE) | A_BOLD);
     for (int i = 0; i < g->apple_count; i++) {
         Point a = g->apples[i];
         mvaddch(oy + a.y + 1, a.x + 1, '*');
     }
-    if (g_color) attroff(COLOR_PAIR(CP_FOOD) | A_BOLD);
+    if (g_color) attroff(COLOR_PAIR(CP_APPLE) | A_BOLD);
 
     /* snake body */
     if (g_color) attron(COLOR_PAIR(CP_SNAKE));
@@ -1240,7 +1241,11 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
             if (ae->is_builtin) {
                 t = naive_agent_decide(&game);
             } else {
-                write_state(ea->wr, &game, cfg->output_mode);
+                if (write_state(ea->wr, &game, cfg->output_mode) < 0) {
+                    game.alive = 0;
+                    game.outcome = GAME_OUTCOME_FAIL;
+                    break;
+                }
                 t = cfg->step ? read_ext_turn(ea, -1) : read_ext_turn(ea, 5000);
             }
 
@@ -1250,13 +1255,12 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
                     "{\"game\":%d,\"tick\":%d,\"action\":\"%s\","
                     "\"score\":%d,\"apples_eaten\":%d,"
                     "\"difficulty\":%d,\"outcome\":\"%s\",\"dir\":\"%s\","
-                    "\"head\":[%d,%d],\"food\":[%d,%d],\"alive\":true}\n",
+                    "\"head\":[%d,%d],\"alive\":true}\n",
                     g + 1, game.tick, turn_name(t),
                     game.score, game.apples_eaten,
                     game.rules.stage, game_outcome_name(game.outcome),
                     direction_name(game.dir),
-                    game.body[game.head_idx].x, game.body[game.head_idx].y,
-                    game.food.x, game.food.y);
+                    game.body[game.head_idx].x, game.body[game.head_idx].y);
             }
 
             /* ── Apply ────────────────────────────────────── */
@@ -1371,13 +1375,12 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
                 "{\"game\":%d,\"tick\":%d,\"action\":null,"
                 "\"score\":%d,\"apples_eaten\":%d,"
                 "\"difficulty\":%d,\"outcome\":\"%s\",\"dir\":\"%s\","
-                "\"head\":[%d,%d],\"food\":[%d,%d],\"alive\":false}\n",
+                "\"head\":[%d,%d],\"alive\":false}\n",
                 g + 1, game.tick,
                 game.score, game.apples_eaten,
                 game.rules.stage, game_outcome_name(game.outcome),
                 direction_name(game.dir),
-                game.body[game.head_idx].x, game.body[game.head_idx].y,
-                game.food.x, game.food.y);
+                game.body[game.head_idx].x, game.body[game.head_idx].y);
         }
 
         /* send dead state to external agent, then stop it */
@@ -1878,6 +1881,7 @@ static void print_usage(const char *prog) {
 int main(int argc, char *argv[]) {
     signal(SIGINT,  handle_sig);
     signal(SIGTERM, handle_sig);
+    signal(SIGPIPE, SIG_IGN);
     resolve_exe_dir(argv[0]);
     load_settings();
     init_agent_registry();

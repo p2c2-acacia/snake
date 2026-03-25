@@ -2,42 +2,72 @@
 
 Terminal Snake in C with:
 
-- Interactive menu (`./snake`)
-- Agent protocol mode (`./snake agent`)
+- Interactive menu (`./snake.out`)
+- Agent protocol mode (`./snake.out agent`)
 - Dynamic `agents/` discovery
 - Difficulty stages 1-7
 - `settings.json` defaults
 
+## Prerequisites
+
+### Windows
+
+Install WSL2, then follow the Linux steps above:
+
+```bash
+wsl --install
+```
+
+Open the Ubuntu terminal from the Start menu and continue with the Linux instructions.
+
+### Linux (Ubuntu/Debian)
+
+```bash
+sudo apt update && sudo apt install build-essential libncurses5-dev
+```
+
+### macOS
+
+```bash
+xcode-select --install
+brew install ncurses
+```
+
 ## Build
 
-Requirements: `gcc`, `make`, `ncurses` headers.
+Retrieve the repository:
+```bash
+git clone https://github.com/p2c2-acacia/snake.git
+cd snake
+```
 
+Build the project:
 ```bash
 make
 ```
 
-Run:
+Verify the build succeeded:
 
 ```bash
-./snake
+ls -l snake.out
 ```
 
-## Quick usage
+### Build the C++ template agent (optional)
 
-- `./snake` → menu (Play / Agent Mode)
-- `./snake play` → direct play mode
-- `./snake agent` → protocol mode (stdin state, stdout action)
-
-Program policy:
-
-```text
-CLI configuration flags are disabled.
-Use settings.json + in-program menus for all game options.
+```bash
+cd agents/cpp && make
 ```
+
+This produces `agents/cpp/agent.out`. The Python agent (`agents/python/agent.py`)
+requires no build step.
+
+## Quick start
+
+- `./snake.out` — menu (Play / Agent Mode)
+- `./snake.out play` — direct play mode
+- `./snake.out agent` — protocol mode (stdin state, stdout action)
 
 ## Difficulties
-
-All stages are **lose on wall/body collision**.
 
 1. Snake starts in a corner; one apple in the center.
 2. Snake starts center (right); fixed apples at fixed board positions.
@@ -47,7 +77,9 @@ All stages are **lose on wall/body collision**.
 6. Snake starts center (random direction); fixed number of apples regenerate randomly.
 7. Snake starts center (random direction); regenerating apples with increasing active count.
 
-Scoring:
+* Snake increases in length by 1 after eating an apple.
+
+Scoring (Goal):
 
 - Stages 1-5: pass/fail
 - Stages 6-7: time ranking (ticks)
@@ -77,8 +109,7 @@ Example state:
   "height": 20,
   "dir": "right",
   "snake": [[10,10],[9,10],[8,10]],
-  "apples": [[13,7]],
-  "food": [13,7]
+  "apples": [[13,7]]
 }
 ```
 
@@ -103,9 +134,9 @@ STATE_END
 
 You parse that text and convert it into your own internal representation.
 
-## settings.json (no runtime prompts required)
+## settings.json
 
-`settings.json` is loaded at startup and created automatically if missing.
+`settings.json` is loaded at startup and created automatically if missing or corrupt.
 Users can edit it while keeping the game running. For agent add/remove edits,
 the menu flow refreshes `agents/` dynamically.
 
@@ -138,6 +169,10 @@ Stage tuning fields are also available:
 - `stage7_max_apples`
 - `stage7_goal_apples`
 
+### In-game settings menu
+
+You may change the settings for the **current session** using the in-game settings menu.
+
 ## Adding an agent (beginner path)
 
 1. Create `agents/my_agent/agent.json`
@@ -162,6 +197,16 @@ The bundled Python/C++ agents are simplified templates and contain
 - Use `agent_output_mode: "raw_board"` for image-like board parsing.
 - Use stage 6/7 for time ranking benchmarks.
 - Enable action logs in Agent Mode to analyze decisions per tick.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `ncurses.h: No such file` | Install ncurses headers: `sudo apt install libncurses5-dev` (Linux) or `brew install ncurses` (macOS) |
+| `make: gcc: not found` | Install build tools: `sudo apt install build-essential` (Linux) or `xcode-select --install` (macOS) |
+| C++ agent won't start | Run `make` inside `agents/cpp/` first |
+| settings.json corrupted | Delete it and relaunch `./snake.out` — a fresh default is created automatically |
+| Terminal too small | Resize your terminal to at least 24 rows by 80 columns |
 
 ## Repository layout
 

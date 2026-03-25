@@ -21,7 +21,7 @@ struct Point { int x, y; };
 // - width/height: board dimensions
 // - dir: current direction of travel ("up"/"right"/...)
 // - snake: list of points (head first)
-// - apples / food: locations of food
+// - apples: locations of apples on the board
 struct GameState {
     bool alive = false;
     int width = 0;
@@ -29,7 +29,6 @@ struct GameState {
     std::string dir = "right";
     std::vector<Point> snake;
     std::vector<Point> apples;
-    Point food{-1, -1};
 };
 
 // ========================= DO NOT TOUCH: protocol glue =========================
@@ -83,12 +82,6 @@ static GameState parse_state(const std::string &line) {
                     target->push_back(pt);
                 } else break;
             }
-            if (*p == ']') ++p;
-        } else if (key == "food") {
-            if (*p == '[') ++p;
-            s.food.x = (int)strtol(p, const_cast<char **>(&p), 10);
-            if (*p == ',') ++p;
-            s.food.y = (int)strtol(p, const_cast<char **>(&p), 10);
             if (*p == ']') ++p;
         } else {
             while (*p && *p != ',' && *p != '}') ++p;
@@ -144,11 +137,7 @@ static std::string choose_action(const GameState &st) {
     for (const auto &p : st.snake) body.insert({p.x, p.y});
 
     std::set<std::pair<int, int>> apple_set;
-    if (!st.apples.empty()) {
-        for (const auto &a : st.apples) apple_set.insert({a.x, a.y});
-    } else {
-        apple_set.insert({st.food.x, st.food.y});
-    }
+    for (const auto &a : st.apples) apple_set.insert({a.x, a.y});
 
     std::vector<std::string> safe;
     for (const auto &turn : {"straight", "left", "right"}) {

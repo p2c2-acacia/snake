@@ -102,16 +102,12 @@ static int is_empty_cell(const SnakeGame *g, int x, int y) {
            g->grid[y][x] == CELL_EMPTY;
 }
 
-static void sync_food_alias(SnakeGame *g) {
-    g->food = (g->apple_count > 0) ? g->apples[0] : (Point){-1, -1};
-}
-
 static int add_apple_at(SnakeGame *g, Point p) {
     if (g->apple_count >= MAX_APPLES) return 0;
     if (!is_empty_cell(g, p.x, p.y)) return 0;
     g->apples[g->apple_count++] = p;
-    g->grid[p.y][p.x] = CELL_FOOD;
-    sync_food_alias(g);
+    g->grid[p.y][p.x] = CELL_APPLE;
+
     return 1;
 }
 
@@ -122,7 +118,7 @@ static int remove_apple_at(SnakeGame *g, Point p) {
         for (int j = i; j + 1 < g->apple_count; j++)
             g->apples[j] = g->apples[j + 1];
         g->apple_count--;
-        sync_food_alias(g);
+    
         return 1;
     }
     return 0;
@@ -353,11 +349,9 @@ void game_init_with_rules(SnakeGame *g, int width, int height,
     g->score_mode = SCORE_PASS_FAIL;
     g->rules = local_rules;
     g->pending_turn = TURN_STRAIGHT;
-    g->food = (Point){-1, -1};
-
     srand(seed ? seed : (unsigned)time(NULL));
     spawn_stage_initial(g);
-    sync_food_alias(g);
+
 }
 
 void game_set_turn(SnakeGame *g, Turn t) {
@@ -384,7 +378,7 @@ int game_tick(SnakeGame *g) {
     }
 
     /* 4. Will we eat an apple this step? */
-    int eating = (g->grid[nh.y][nh.x] == CELL_FOOD);
+    int eating = (g->grid[nh.y][nh.x] == CELL_APPLE);
     if (eating) remove_apple_at(g, nh);
 
     /* 5. If NOT eating, retract the tail first (frees its cell so that
@@ -415,6 +409,6 @@ int game_tick(SnakeGame *g) {
     }
 
     g->tick++;
-    sync_food_alias(g);
+
     return g->alive;
 }

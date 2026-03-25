@@ -1,9 +1,11 @@
-# Build artifacts
-snake
-src/*.o
+# Compiled binaries and object files
+*.o
+*.out
 
-# Agent build artifacts
-agents/cpp/agent
+# Leave only default agents
+agents/
+!agents/cpp/*
+!agents/python/*
 
 # Log files
 snake_log_*.jsonl
@@ -12,4 +14,17 @@ snake_summary_*.txt
 # Backup files
 *.bak
 
+# Internal docs
 docs/superpowers
+AGENT-FILES
+.claude
+.github
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.vscode/
+.idea/

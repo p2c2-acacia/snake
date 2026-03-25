@@ -1,5 +1,5 @@
 {
     "name": "C++ Template",
-    "command": "./agent --pipe",
+    "command": "./agent.out --pipe",
     "description": "Beginner-friendly C++ stdin/stdout template"
 }

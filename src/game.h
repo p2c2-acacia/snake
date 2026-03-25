@@ -27,7 +27,7 @@ extern "C" {
 #define MAX_APPLES    MAX_SNAKE_LEN
 
 /* ── Cell types on the grid ─────────────────────────────────── */
-typedef enum { CELL_EMPTY = 0, CELL_SNAKE = 1, CELL_FOOD = 2 } CellType;
+typedef enum { CELL_EMPTY = 0, CELL_SNAKE = 1, CELL_APPLE = 2 } CellType;
 
 /* ── Absolute directions (clockwise: UP→RIGHT→DOWN→LEFT) ──── */
 typedef enum { DIR_UP = 0, DIR_RIGHT = 1, DIR_DOWN = 2, DIR_LEFT = 3 } Direction;
@@ -80,7 +80,6 @@ typedef struct {
     Direction     dir;                 /* current heading */
     Point         apples[MAX_APPLES];  /* active apples on the board */
     int           apple_count;         /* number of active apples */
-    Point         food;                /* first apple (compatibility alias) */
     int           apples_eaten;        /* total apples collected */
     int           goal_apples;         /* pass threshold */
     int           stage7_active_apples;/* dynamic active apples for stage 7 */

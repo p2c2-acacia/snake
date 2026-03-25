@@ -4,7 +4,7 @@
  * Strategy: enumerate all three possible turns (straight, left, right),
  * filter to those that don't cause immediate death (wall or self-collision
  * on the very next tick), and pick one at random.  Correctly accounts for
- * the tail retracting when not eating food.
+ * the tail retracting when not eating an apple.
  */
 
 #include "agent.h"
@@ -20,7 +20,7 @@ static int is_turn_safe(const SnakeGame *g, Turn t) {
     if (nh.x < 0 || nh.x >= g->width || nh.y < 0 || nh.y >= g->height)
         return 0;
 
-    int eating = (g->grid[nh.y][nh.x] == CELL_FOOD);
+    int eating = (g->grid[nh.y][nh.x] == CELL_APPLE);
 
     /* Self-collision (cell occupied by snake body). */
     if (g->grid[nh.y][nh.x] == CELL_SNAKE) {

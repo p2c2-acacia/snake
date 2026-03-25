@@ -13,12 +13,12 @@ endif
 CFLAGS  = -Wall -Wextra -O2 -std=c11 $(NCURSES_CFLAGS)
 LDFLAGS = $(NCURSES_LDFLAGS) -lm
 
-TARGET  = snake
+TARGET  = snake.out
 SRCDIR  = src
 SRCS    = $(SRCDIR)/main.c $(SRCDIR)/game.c $(SRCDIR)/agent.c
 OBJS    = $(SRCS:.c=.o)
 
-all: $(TARGET)
+all: $(TARGET) agents
 
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
@@ -26,7 +26,15 @@ $(TARGET): $(OBJS)
 $(SRCDIR)/%.o: $(SRCDIR)/%.c $(SRCDIR)/game.h $(SRCDIR)/agent.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+agents:
+	@for dir in agents/*/; do \
+		if [ -f "$$dir/Makefile" ]; then $(MAKE) -C "$$dir"; fi; \
+	done
+
 clean:
 	rm -f $(TARGET) $(SRCDIR)/*.o
+	@for dir in agents/*/; do \
+		if [ -f "$$dir/Makefile" ]; then $(MAKE) -C "$$dir" clean; fi; \
+	done
 
-.PHONY: all clean
+.PHONY: all clean agents
