@@ -87,6 +87,15 @@ void game_rules_default(GameRules *rules) {
     rules->stage7_max_apples     = 8;
     /* No apple goal for stage 7 (infinite / play until death or fill). */
     rules->stage7_goal_apples    = 0;
+
+    /* Modifiers (all off by default). */
+    rules->poison_count          = 0;
+    rules->obstacle_count        = 0;
+    rules->vision_radius         = 0;
+    rules->apple_decay_ticks     = 0;
+    rules->initial_snake_len     = 0;
+    rules->tick_penalty_interval = 0;
+    rules->score_multiplier      = 1.0;
 }
 
 /* ── Internal helpers ───────────────────────────────────────── */
@@ -107,6 +116,7 @@ static int is_empty_cell(const SnakeGame *g, int x, int y) {
 static int add_apple_at(SnakeGame *g, Point p) {
     if (g->apple_count >= MAX_APPLES) return 0;
     if (!is_empty_cell(g, p.x, p.y)) return 0;
+    g->apple_spawn_tick[g->apple_count] = g->tick;
     g->apples[g->apple_count++] = p;
     g->grid[p.y][p.x] = CELL_APPLE;
 
@@ -117,8 +127,10 @@ static int remove_apple_at(SnakeGame *g, Point p) {
     for (int i = 0; i < g->apple_count; i++) {
         if (!point_eq(g->apples[i], p)) continue;
         g->grid[p.y][p.x] = CELL_EMPTY;
-        for (int j = i; j + 1 < g->apple_count; j++)
+        for (int j = i; j + 1 < g->apple_count; j++) {
             g->apples[j] = g->apples[j + 1];
+            g->apple_spawn_tick[j] = g->apple_spawn_tick[j + 1];
+        }
         g->apple_count--;
         return 1;
     }
@@ -164,22 +176,85 @@ static void ensure_target_apples(SnakeGame *g, int target_count) {
     }
 }
 
+/* ── Poison helpers ─────────────────────────────────────────── */
+
+static int add_poison_at(SnakeGame *g, Point p) {
+    if (g->poison_count >= MAX_APPLES) return 0;
+    if (!is_empty_cell(g, p.x, p.y)) return 0;
+    g->poison[g->poison_count++] = p;
+    g->grid[p.y][p.x] = CELL_POISON;
+    return 1;
+}
+
+static int spawn_random_poison(SnakeGame *g) {
+    int empty = count_empty_cells(g);
+    if (empty <= 0) return 0;
+    int pick = rand() % empty;
+    for (int y = 0; y < g->height; y++)
+        for (int x = 0; x < g->width; x++) {
+            if (g->grid[y][x] != CELL_EMPTY) continue;
+            if (pick-- == 0) return add_poison_at(g, (Point){x, y});
+        }
+    return 0;
+}
+
+static void ensure_target_poison(SnakeGame *g, int target) {
+    target = clamp_int(target, 0, g->width * g->height);
+    while (g->poison_count < target)
+        if (!spawn_random_poison(g)) break;
+}
+
+/* ── Obstacle helpers ──────────────────────────────────────── */
+
+static int add_obstacle_at(SnakeGame *g, Point p) {
+    if (g->obstacle_count >= MAX_APPLES) return 0;
+    if (!is_empty_cell(g, p.x, p.y)) return 0;
+    g->obstacles[g->obstacle_count++] = p;
+    g->grid[p.y][p.x] = CELL_WALL_BLOCK;
+    return 1;
+}
+
+static int spawn_random_obstacle(SnakeGame *g) {
+    int empty = count_empty_cells(g);
+    if (empty <= 0) return 0;
+    int pick = rand() % empty;
+    for (int y = 0; y < g->height; y++)
+        for (int x = 0; x < g->width; x++) {
+            if (g->grid[y][x] != CELL_EMPTY) continue;
+            if (pick-- == 0) return add_obstacle_at(g, (Point){x, y});
+        }
+    return 0;
+}
+
+static void ensure_target_obstacles(SnakeGame *g, int target) {
+    target = clamp_int(target, 0, g->width * g->height);
+    while (g->obstacle_count < target)
+        if (!spawn_random_obstacle(g)) break;
+}
+
+/* ── Score multiplier computation ──────────────────────────── */
+
+static double compute_score_multiplier(const GameRules *r) {
+    double m = 1.0;
+    if (r->obstacle_count > 0)        m *= 1.3;
+    if (r->poison_count > 0)          m *= 1.5;
+    if (r->vision_radius > 0)         m *= 1.8;
+    if (r->apple_decay_ticks > 0)     m *= 1.4;
+    if (r->initial_snake_len > 3)     m *= 1.2;
+    if (r->tick_penalty_interval > 0) m *= 1.3;
+    return m;
+}
+
 static void place_snake(SnakeGame *g, Point head, Direction dir, int len) {
-    Point d = direction_delta(dir);
     len = clamp_int(len, 1, MAX_SNAKE_LEN);
-    g->snake_len = len;
-    g->head_idx = len - 1;
+    g->target_snake_len = len;
+    g->snake_len = 1;          /* start with head only */
+    g->head_idx = 0;
     g->dir = dir;
     g->pending_turn = TURN_STRAIGHT;
 
-    for (int i = 0; i < len; i++) {
-        Point p = {
-            head.x - d.x * (len - 1 - i),
-            head.y - d.y * (len - 1 - i)
-        };
-        g->body[i] = p;
-        g->grid[p.y][p.x] = CELL_SNAKE;
-    }
+    g->body[0] = head;
+    g->grid[head.y][head.x] = CELL_SNAKE;
 }
 
 static void spawn_stage2_fixed(SnakeGame *g, int count) {
@@ -218,53 +293,59 @@ static void spawn_stage_initial(SnakeGame *g) {
     int cy = g->height / 2;
     Direction random_dir = (Direction)(rand() % 4);
     int stage = g->rules.stage;
+    int slen = (g->rules.initial_snake_len > 0) ? g->rules.initial_snake_len : 3;
 
-    g->score_mode = (stage >= 6 && stage <= 7) ? SCORE_TIME_RANK : SCORE_PASS_FAIL;
+    g->score_mode = (stage >= 6) ? SCORE_TIME_RANK : SCORE_PASS_FAIL;
+    /* Stages 1-5 and 8-9 are pass/fail. */
+    if (stage >= 1 && stage <= 5) g->score_mode = SCORE_PASS_FAIL;
+    if (stage == 8 || stage == 9)  g->score_mode = SCORE_PASS_FAIL;
+
     g->goal_apples = 0;
     g->stage7_active_apples = 0;
 
+    /* Compute multiplier from active modifiers. */
+    g->rules.score_multiplier = compute_score_multiplier(&g->rules);
+
     if (stage == 1) {
-        place_snake(g, (Point){2, 0}, DIR_RIGHT, 3);
+        place_snake(g, (Point){2, 0}, DIR_RIGHT, slen);
         add_apple_at(g, (Point){cx, cy});
         return;
     }
 
     if (stage == 2) {
-        place_snake(g, (Point){cx, cy}, DIR_RIGHT, 3);
+        place_snake(g, (Point){cx, cy}, DIR_RIGHT, slen);
         spawn_stage2_fixed(g, clamp_int(g->rules.stage2_fixed_apples, 1, MAX_APPLES));
         return;
     }
 
     if (stage == 3) {
-        place_snake(g, (Point){cx, cy}, random_dir, 3);
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
         spawn_random_apple(g);
         return;
     }
 
     if (stage == 4) {
-        place_snake(g, (Point){cx, cy}, random_dir, 3);
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
         ensure_target_apples(g, clamp_int(g->rules.stage4_fixed_apples, 1, MAX_APPLES));
         return;
     }
 
     if (stage == 5) {
-        place_snake(g, (Point){cx, cy}, random_dir, 3);
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
         g->goal_apples = clamp_int(g->rules.stage5_goal_apples, 1, MAX_APPLES);
         ensure_target_apples(g, 1);
         return;
     }
 
     if (stage == 6) {
-        place_snake(g, (Point){cx, cy}, random_dir, 3);
-        /* No apple goal for stage 6: play until death or board is filled. */
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
         g->goal_apples = 0;
         ensure_target_apples(g, clamp_int(g->rules.stage6_fixed_apples, 1, MAX_APPLES));
         return;
     }
 
     if (stage == 7) {
-        place_snake(g, (Point){cx, cy}, random_dir, 3);
-        /* No apple goal for stage 7: play until death or board is filled. */
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
         g->goal_apples = 0;
         g->stage7_active_apples =
             clamp_int(g->rules.stage7_initial_apples, 1, MAX_APPLES);
@@ -272,13 +353,61 @@ static void spawn_stage_initial(SnakeGame *g) {
         return;
     }
 
+    /* ── Stage 8: Obstacles ────────────────────────────────────── */
+    if (stage == 8) {
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
+        g->goal_apples = clamp_int(g->rules.stage5_goal_apples, 1, MAX_APPLES);
+        ensure_target_obstacles(g, g->rules.obstacle_count);
+        ensure_target_apples(g, 1);
+        return;
+    }
+
+    /* ── Stage 9: Poison + Obstacles ───────────────────────────── */
+    if (stage == 9) {
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
+        g->goal_apples = clamp_int(g->rules.stage5_goal_apples, 1, MAX_APPLES);
+        ensure_target_obstacles(g, g->rules.obstacle_count);
+        ensure_target_poison(g, g->rules.poison_count);
+        ensure_target_apples(g, 1);
+        return;
+    }
+
+    /* ── Stage 10: Fog of war ──────────────────────────────────── */
+    if (stage == 10) {
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
+        g->goal_apples = clamp_int(g->rules.stage5_goal_apples, 1, MAX_APPLES);
+        ensure_target_apples(g, 1);
+        return;
+    }
+
+    /* ── Stage 11: Decay + obstacles + tick penalty ────────────── */
+    if (stage == 11) {
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
+        g->goal_apples = clamp_int(g->rules.stage5_goal_apples, 1, MAX_APPLES);
+        ensure_target_obstacles(g, g->rules.obstacle_count);
+        ensure_target_apples(g, 1);
+        return;
+    }
+
+    /* ── Stage 12: Everything ──────────────────────────────────── */
+    if (stage == 12) {
+        place_snake(g, (Point){cx, cy}, random_dir, slen);
+        g->goal_apples = clamp_int(g->rules.stage5_goal_apples, 1, MAX_APPLES);
+        ensure_target_obstacles(g, g->rules.obstacle_count);
+        ensure_target_poison(g, g->rules.poison_count);
+        ensure_target_apples(g, 1);
+        return;
+    }
+
     /* Classic fallback: center spawn, facing right, one regenerating apple. */
-    place_snake(g, (Point){cx, cy}, DIR_RIGHT, 3);
+    place_snake(g, (Point){cx, cy}, DIR_RIGHT, slen);
     ensure_target_apples(g, 1);
 }
 
 static void on_apple_eaten(SnakeGame *g) {
     int stage = g->rules.stage;
+
+    g->last_eat_tick = g->tick;
 
     if (stage >= 1 && stage <= 4) {
         if (g->apple_count == 0) mark_pass(g);
@@ -295,7 +424,6 @@ static void on_apple_eaten(SnakeGame *g) {
     }
 
     if (stage == 6) {
-        /* No apple-goal termination for stage 6; keep fixed active apples. */
         ensure_target_apples(g, clamp_int(g->rules.stage6_fixed_apples, 1, MAX_APPLES));
         return;
     }
@@ -310,8 +438,20 @@ static void on_apple_eaten(SnakeGame *g) {
                 clamp_int(g->stage7_active_apples + by, 1, max_apples);
         }
 
-        /* No apple-goal termination for stage 7; update active apples instead. */
         ensure_target_apples(g, g->stage7_active_apples);
+        return;
+    }
+
+    /* ── Stages 8-12: goal-based with regenerating apples ──── */
+    if (stage >= 8 && stage <= 12) {
+        if (g->goal_apples > 0 && g->apples_eaten >= g->goal_apples) {
+            mark_pass(g);
+            return;
+        }
+        ensure_target_apples(g, 1);
+        /* Maintain poison count (poison consumed by decay or other logic). */
+        if (g->rules.poison_count > 0)
+            ensure_target_poison(g, g->rules.poison_count);
         return;
     }
 
@@ -372,13 +512,30 @@ int game_tick(SnakeGame *g) {
         return 0;
     }
 
+    /* 3b. Wall-block collision. */
+    if (g->grid[nh.y][nh.x] == CELL_WALL_BLOCK) {
+        g->alive = 0;
+        g->outcome = GAME_OUTCOME_FAIL;
+        return 0;
+    }
+
+    /* 3c. Poison collision. */
+    if (g->grid[nh.y][nh.x] == CELL_POISON) {
+        g->alive = 0;
+        g->outcome = GAME_OUTCOME_FAIL;
+        return 0;
+    }
+
     /* 4. Will we eat an apple this step? */
     int eating = (g->grid[nh.y][nh.x] == CELL_APPLE);
     if (eating) remove_apple_at(g, nh);
 
     /* 5. If NOT eating, retract the tail first (frees its cell so that
-     *    chasing the tail is a legal move). */
-    if (!eating) {
+     *    chasing the tail is a legal move).
+     *    Exception: while still spawning (snake_len < target_snake_len),
+     *    skip retraction so the snake grows by 1 each tick. */
+    int spawning = (g->snake_len < g->target_snake_len);
+    if (!eating && !spawning) {
         int tail_idx = (g->head_idx - g->snake_len + 1 + MAX_SNAKE_LEN) % MAX_SNAKE_LEN;
         g->grid[g->body[tail_idx].y][g->body[tail_idx].x] = CELL_EMPTY;
     }
@@ -395,13 +552,16 @@ int game_tick(SnakeGame *g) {
     g->body[g->head_idx] = nh;
     g->grid[nh.y][nh.x] = CELL_SNAKE;
 
-    /* 8. If eating, grow the snake and apply stage-specific apple logic. */
+    /* 8. If spawning (growing to target length), increase snake_len. */
+    if (spawning) g->snake_len++;
+
+    /* 9. If eating, grow the snake and apply stage-specific apple logic. */
     if (eating) {
         g->snake_len++;
+        g->target_snake_len++;  /* eating always extends the target too */
         g->score++;
         g->apples_eaten++;
         on_apple_eaten(g);
-        /* If the snake has filled the entire board, that's a pass. */
         if (g->snake_len >= g->width * g->height) {
             mark_pass(g);
             return g->alive;
@@ -409,6 +569,25 @@ int game_tick(SnakeGame *g) {
     }
 
     g->tick++;
-    
+
+    /* 9. Apple decay: remove apples that have lived too long. */
+    if (g->alive && g->rules.apple_decay_ticks > 0) {
+        for (int i = g->apple_count - 1; i >= 0; i--) {
+            if (g->tick - g->apple_spawn_tick[i] >= g->rules.apple_decay_ticks) {
+                remove_apple_at(g, g->apples[i]);
+            }
+        }
+        /* Replenish to at least 1 apple so the game remains winnable. */
+        if (g->apple_count == 0 && g->alive)
+            ensure_target_apples(g, 1);
+    }
+
+    /* 10. Tick penalty: score decreases periodically when not eating. */
+    if (g->alive && g->rules.tick_penalty_interval > 0 &&
+        g->tick > 0 && (g->tick % g->rules.tick_penalty_interval) == 0) {
+        if (g->tick != g->last_eat_tick && g->score > 0)
+            g->score--;
+    }
+
     return g->alive;
 }

@@ -51,6 +51,8 @@
 #define CP_GOOD     8
 #define CP_BAD      9
 #define CP_DIM     10
+#define CP_POISON  11
+#define CP_WALL    12
 
 /* ═══════════════════════════════════════════════════════════════════
  * TYPES
@@ -129,6 +131,27 @@ typedef struct {
     OutputMode   agent_output_mode;
     char         default_agent[64];
     GameRules    rules;
+
+    /* Stage 8-12 tunables */
+    int stage8_obstacles;
+    int stage8_goal_apples;
+    int stage9_poison;
+    int stage9_obstacles;
+    int stage9_goal_apples;
+    int stage10_vision_radius;
+    int stage10_goal_apples;
+    int stage11_apple_decay;
+    int stage11_obstacles;
+    int stage11_tick_penalty;
+    int stage11_goal_apples;
+    int stage12_width;
+    int stage12_height;
+    int stage12_initial_snake_len;
+    int stage12_poison;
+    int stage12_obstacles;
+    int stage12_vision_radius;
+    int stage12_apple_decay;
+    int stage12_goal_apples;
 } AppSettings;
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -322,6 +345,27 @@ static void init_settings_defaults(AppSettings *s) {
     s->agent_difficulty = 1;
     s->agent_output_mode = OUTPUT_JSON;
     snprintf(s->default_agent, sizeof s->default_agent, "Built-in Naive");
+
+    /* Stage 8-12 defaults */
+    s->stage8_obstacles = 8;
+    s->stage8_goal_apples = 15;
+    s->stage9_poison = 3;
+    s->stage9_obstacles = 6;
+    s->stage9_goal_apples = 15;
+    s->stage10_vision_radius = 5;
+    s->stage10_goal_apples = 20;
+    s->stage11_apple_decay = 25;
+    s->stage11_obstacles = 6;
+    s->stage11_tick_penalty = 15;
+    s->stage11_goal_apples = 25;
+    s->stage12_width = 10;
+    s->stage12_height = 10;
+    s->stage12_initial_snake_len = 8;
+    s->stage12_poison = 3;
+    s->stage12_obstacles = 4;
+    s->stage12_vision_radius = 4;
+    s->stage12_apple_decay = 20;
+    s->stage12_goal_apples = 15;
 }
 
 static void parse_settings_text(AppSettings *s, const char *buf) {
@@ -337,8 +381,8 @@ static void parse_settings_text(AppSettings *s, const char *buf) {
         s->play_step = (strcmp(sv, "step") == 0) ? 1 : 0;
     if (json_get_str(buf, "agent_tick_mode", sv, sizeof sv))
         s->agent_step = (strcmp(sv, "timed") == 0) ? 0 : 1;
-    if (json_get_int(buf, "play_difficulty", &iv)) s->play_difficulty = clamp(iv, 1, 7);
-    if (json_get_int(buf, "agent_difficulty", &iv)) s->agent_difficulty = clamp(iv, 1, 7);
+    if (json_get_int(buf, "play_difficulty", &iv)) s->play_difficulty = clamp(iv, 1, 12);
+    if (json_get_int(buf, "agent_difficulty", &iv)) s->agent_difficulty = clamp(iv, 1, 12);
     if (json_get_int(buf, "agent_games", &iv)) s->agent_games = clamp(iv, 1, 100000);
 
     if (json_get_bool(buf, "agent_watch", &iv)) {
@@ -378,6 +422,27 @@ static void parse_settings_text(AppSettings *s, const char *buf) {
         s->rules.stage7_max_apples = clamp(iv, 1, MAX_APPLES);
     if (json_get_int(buf, "stage7_goal_apples", &iv))
         s->rules.stage7_goal_apples = clamp(iv, 1, MAX_APPLES);
+
+    /* Stage 8-12 tunables */
+    if (json_get_int(buf, "stage8_obstacles", &iv)) s->stage8_obstacles = clamp(iv, 0, 50);
+    if (json_get_int(buf, "stage8_goal_apples", &iv)) s->stage8_goal_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage9_poison", &iv)) s->stage9_poison = clamp(iv, 0, 50);
+    if (json_get_int(buf, "stage9_obstacles", &iv)) s->stage9_obstacles = clamp(iv, 0, 50);
+    if (json_get_int(buf, "stage9_goal_apples", &iv)) s->stage9_goal_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage10_vision_radius", &iv)) s->stage10_vision_radius = clamp(iv, 1, 50);
+    if (json_get_int(buf, "stage10_goal_apples", &iv)) s->stage10_goal_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage11_apple_decay", &iv)) s->stage11_apple_decay = clamp(iv, 1, 1000);
+    if (json_get_int(buf, "stage11_obstacles", &iv)) s->stage11_obstacles = clamp(iv, 0, 50);
+    if (json_get_int(buf, "stage11_tick_penalty", &iv)) s->stage11_tick_penalty = clamp(iv, 1, 1000);
+    if (json_get_int(buf, "stage11_goal_apples", &iv)) s->stage11_goal_apples = clamp(iv, 1, MAX_APPLES);
+    if (json_get_int(buf, "stage12_width", &iv)) s->stage12_width = clamp(iv, 5, MAX_GRID_DIM);
+    if (json_get_int(buf, "stage12_height", &iv)) s->stage12_height = clamp(iv, 5, MAX_GRID_DIM);
+    if (json_get_int(buf, "stage12_initial_snake_len", &iv)) s->stage12_initial_snake_len = clamp(iv, 1, 50);
+    if (json_get_int(buf, "stage12_poison", &iv)) s->stage12_poison = clamp(iv, 0, 50);
+    if (json_get_int(buf, "stage12_obstacles", &iv)) s->stage12_obstacles = clamp(iv, 0, 50);
+    if (json_get_int(buf, "stage12_vision_radius", &iv)) s->stage12_vision_radius = clamp(iv, 1, 50);
+    if (json_get_int(buf, "stage12_apple_decay", &iv)) s->stage12_apple_decay = clamp(iv, 1, 1000);
+    if (json_get_int(buf, "stage12_goal_apples", &iv)) s->stage12_goal_apples = clamp(iv, 1, MAX_APPLES);
 }
 
 static void write_default_settings_file(const char *path, const AppSettings *s) {
@@ -407,7 +472,26 @@ static void write_default_settings_file(const char *path, const AppSettings *s) 
             "  \"stage7_increment_every\": %d,\n"
             "  \"stage7_increment_by\": %d,\n"
             "  \"stage7_max_apples\": %d,\n"
-            "  \"stage7_goal_apples\": %d\n"
+            "  \"stage7_goal_apples\": %d,\n"
+            "  \"stage8_obstacles\": %d,\n"
+            "  \"stage8_goal_apples\": %d,\n"
+            "  \"stage9_poison\": %d,\n"
+            "  \"stage9_obstacles\": %d,\n"
+            "  \"stage9_goal_apples\": %d,\n"
+            "  \"stage10_vision_radius\": %d,\n"
+            "  \"stage10_goal_apples\": %d,\n"
+            "  \"stage11_apple_decay\": %d,\n"
+            "  \"stage11_obstacles\": %d,\n"
+            "  \"stage11_tick_penalty\": %d,\n"
+            "  \"stage11_goal_apples\": %d,\n"
+            "  \"stage12_width\": %d,\n"
+            "  \"stage12_height\": %d,\n"
+            "  \"stage12_initial_snake_len\": %d,\n"
+            "  \"stage12_poison\": %d,\n"
+            "  \"stage12_obstacles\": %d,\n"
+            "  \"stage12_vision_radius\": %d,\n"
+            "  \"stage12_apple_decay\": %d,\n"
+            "  \"stage12_goal_apples\": %d\n"
             "}\n",
             s->width, s->height, s->speed_ms, s->seed,
             s->play_step ? "step" : "timed",
@@ -426,7 +510,26 @@ static void write_default_settings_file(const char *path, const AppSettings *s) 
             s->rules.stage7_increment_every,
             s->rules.stage7_increment_by,
             s->rules.stage7_max_apples,
-            s->rules.stage7_goal_apples);
+            s->rules.stage7_goal_apples,
+            s->stage8_obstacles,
+            s->stage8_goal_apples,
+            s->stage9_poison,
+            s->stage9_obstacles,
+            s->stage9_goal_apples,
+            s->stage10_vision_radius,
+            s->stage10_goal_apples,
+            s->stage11_apple_decay,
+            s->stage11_obstacles,
+            s->stage11_tick_penalty,
+            s->stage11_goal_apples,
+            s->stage12_width,
+            s->stage12_height,
+            s->stage12_initial_snake_len,
+            s->stage12_poison,
+            s->stage12_obstacles,
+            s->stage12_vision_radius,
+            s->stage12_apple_decay,
+            s->stage12_goal_apples);
     fclose(f);
 }
 
@@ -501,7 +604,46 @@ static void refresh_agent_registry_if_needed(void) {
 
 static void update_rules_for_stage(GameRules *rules, int stage) {
     if (!rules) return;
-    rules->stage = clamp(stage, 1, 7);
+    rules->stage = clamp(stage, 1, 12);
+
+    /* Reset modifiers — stages 1-7 use none. */
+    rules->poison_count          = 0;
+    rules->obstacle_count        = 0;
+    rules->vision_radius         = 0;
+    rules->apple_decay_ticks     = 0;
+    rules->initial_snake_len     = 0;
+    rules->tick_penalty_interval = 0;
+    rules->score_multiplier      = 1.0;
+
+    switch (stage) {
+    case 8: /* Obstacles */
+        rules->obstacle_count    = g_settings.stage8_obstacles;
+        rules->stage5_goal_apples = g_settings.stage8_goal_apples;
+        break;
+    case 9: /* Poison + Obstacles */
+        rules->poison_count      = g_settings.stage9_poison;
+        rules->obstacle_count    = g_settings.stage9_obstacles;
+        rules->stage5_goal_apples = g_settings.stage9_goal_apples;
+        break;
+    case 10: /* Fog of war */
+        rules->vision_radius     = g_settings.stage10_vision_radius;
+        rules->stage5_goal_apples = g_settings.stage10_goal_apples;
+        break;
+    case 11: /* Decay + obstacles + tick penalty */
+        rules->apple_decay_ticks = g_settings.stage11_apple_decay;
+        rules->obstacle_count    = g_settings.stage11_obstacles;
+        rules->tick_penalty_interval = g_settings.stage11_tick_penalty;
+        rules->stage5_goal_apples = g_settings.stage11_goal_apples;
+        break;
+    case 12: /* Everything */
+        rules->poison_count      = g_settings.stage12_poison;
+        rules->obstacle_count    = g_settings.stage12_obstacles;
+        rules->vision_radius     = g_settings.stage12_vision_radius;
+        rules->apple_decay_ticks = g_settings.stage12_apple_decay;
+        rules->initial_snake_len = g_settings.stage12_initial_snake_len;
+        rules->stage5_goal_apples = g_settings.stage12_goal_apples;
+        break;
+    }
 }
 
 /* Resolve the directory containing our own binary. */
@@ -540,6 +682,8 @@ static void init_colors(void) {
         init_pair(CP_GOOD,   COLOR_GREEN,  -1);
         init_pair(CP_BAD,    COLOR_RED,    -1);
         init_pair(CP_DIM,    COLOR_BLACK,  -1);  /* bright-black = grey */
+        init_pair(CP_POISON, COLOR_MAGENTA, -1);
+        init_pair(CP_WALL,   COLOR_WHITE,  -1);
     }
 }
 
@@ -576,25 +720,59 @@ static void center_str(int y, int x, int w, const char *s) {
  * JSON STATE OUTPUT (shared between agent-protocol mode & runner)
  * ═══════════════════════════════════════════════════════════════════ */
 
+static int in_vision(const SnakeGame *g, int x, int y) {
+    int vr = g->rules.vision_radius;
+    if (vr <= 0) return 1; /* full visibility */
+    Point h = g->body[g->head_idx];
+    return (abs(x - h.x) + abs(y - h.y)) <= vr;
+}
+
 static void write_state_json(FILE *out, const SnakeGame *g) {
     fprintf(out,
         "{\"tick\":%d,\"alive\":%s,\"score\":%d,"
         "\"apples_eaten\":%d,\"goal_apples\":%d,"
         "\"difficulty\":%d,\"outcome\":\"%s\",\"score_mode\":\"%s\","
-        "\"width\":%d,\"height\":%d,\"dir\":\"%s\",\"snake\":[",
+        "\"width\":%d,\"height\":%d,\"dir\":\"%s\","
+        "\"vision_radius\":%d,\"apple_decay_ticks\":%d,"
+        "\"tick_penalty_interval\":%d,\"score_multiplier\":%.2f,"
+        "\"snake\":[",
         g->tick, g->alive ? "true" : "false", g->score,
         g->apples_eaten, g->goal_apples, g->rules.stage,
         game_outcome_name(g->outcome), game_score_mode_name(g->score_mode),
-        g->width, g->height, direction_name(g->dir));
+        g->width, g->height, direction_name(g->dir),
+        g->rules.vision_radius, g->rules.apple_decay_ticks,
+        g->rules.tick_penalty_interval, g->rules.score_multiplier);
+    int first = 1;
     for (int i = 0; i < g->snake_len; i++) {
         int idx = (g->head_idx - i + MAX_SNAKE_LEN) % MAX_SNAKE_LEN;
-        fprintf(out, "%s[%d,%d]", i ? "," : "",
-                g->body[idx].x, g->body[idx].y);
+        int bx = g->body[idx].x, by = g->body[idx].y;
+        if (!in_vision(g, bx, by)) continue;
+        fprintf(out, "%s[%d,%d]", first ? "" : ",", bx, by);
+        first = 0;
     }
     fprintf(out, "],\"apples\":[");
+    first = 1;
     for (int i = 0; i < g->apple_count; i++) {
-        fprintf(out, "%s[%d,%d]", i ? "," : "",
+        if (!in_vision(g, g->apples[i].x, g->apples[i].y)) continue;
+        fprintf(out, "%s[%d,%d]", first ? "" : ",",
                 g->apples[i].x, g->apples[i].y);
+        first = 0;
+    }
+    fprintf(out, "],\"poison\":[");
+    first = 1;
+    for (int i = 0; i < g->poison_count; i++) {
+        if (!in_vision(g, g->poison[i].x, g->poison[i].y)) continue;
+        fprintf(out, "%s[%d,%d]", first ? "" : ",",
+                g->poison[i].x, g->poison[i].y);
+        first = 0;
+    }
+    fprintf(out, "],\"obstacles\":[");
+    first = 1;
+    for (int i = 0; i < g->obstacle_count; i++) {
+        if (!in_vision(g, g->obstacles[i].x, g->obstacles[i].y)) continue;
+        fprintf(out, "%s[%d,%d]", first ? "" : ",",
+                g->obstacles[i].x, g->obstacles[i].y);
+        first = 0;
     }
     fprintf(out, "]}\n");
     fflush(out);
@@ -606,7 +784,9 @@ static void write_state_raw_board(FILE *out, const SnakeGame *g) {
 
     for (int y = 0; y < g->height; y++) {
         for (int x = 0; x < g->width; x++) {
-            if (g->grid[y][x] == CELL_APPLE) board[y][x] = '*';
+            if (g->grid[y][x] == CELL_APPLE)      board[y][x] = '*';
+            else if (g->grid[y][x] == CELL_POISON) board[y][x] = 'X';
+            else if (g->grid[y][x] == CELL_WALL_BLOCK) board[y][x] = '#';
         }
     }
 
@@ -728,6 +908,22 @@ static void draw_game(const SnakeGame *g, const char *title_extra) {
     for (int x = 0; x < g->width; x++) mvaddch(oy + g->height + 1, x + 1, ACS_HLINE);
     mvaddch(oy + g->height + 1, g->width + 1, ACS_LRCORNER);
     if (g_color) attroff(COLOR_PAIR(CP_BORDER));
+
+    /* obstacles */
+    if (g_color) attron(COLOR_PAIR(CP_WALL) | A_BOLD);
+    for (int i = 0; i < g->obstacle_count; i++) {
+        Point w = g->obstacles[i];
+        mvaddch(oy + w.y + 1, w.x + 1, '#');
+    }
+    if (g_color) attroff(COLOR_PAIR(CP_WALL) | A_BOLD);
+
+    /* poison */
+    if (g_color) attron(COLOR_PAIR(CP_POISON) | A_BOLD);
+    for (int i = 0; i < g->poison_count; i++) {
+        Point p = g->poison[i];
+        mvaddch(oy + p.y + 1, p.x + 1, 'X');
+    }
+    if (g_color) attroff(COLOR_PAIR(CP_POISON) | A_BOLD);
 
     /* apples */
     if (g_color) attron(COLOR_PAIR(CP_APPLE) | A_BOLD);
@@ -1215,7 +1411,12 @@ static void run_agent_batch(const AgentCfg *cfg, BatchResult *br) {
         unsigned int seed = cfg->seed ? cfg->seed + (unsigned)g : 0;
         GameRules rules = cfg->rules;
         update_rules_for_stage(&rules, cfg->difficulty_stage);
-        game_init_with_rules(&game, cfg->width, cfg->height, seed, &rules);
+        int gw = cfg->width, gh = cfg->height;
+        if (cfg->difficulty_stage == 12) {
+            gw = g_settings.stage12_width;
+            gh = g_settings.stage12_height;
+        }
+        game_init_with_rules(&game, gw, gh, seed, &rules);
 
         /* start external agent for this game */
         ExtAgent *ea = NULL;
@@ -1925,13 +2126,15 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Grid dimensions must be in 5..%d\n", MAX_GRID_DIM);
         return 1;
     }
-    difficulty = clamp(difficulty, 1, 7);
+    difficulty = clamp(difficulty, 1, 12);
 
     /* ── Agent protocol mode (no ncurses) ───────────────────── */
     if (mode == RUN_AGENT_PROTO) {
         GameRules rules = g_settings.rules;
         update_rules_for_stage(&rules, difficulty);
-        run_agent_proto(width, height, seed, 1, speed_ms, output_mode, &rules);
+        int pw = width, ph = height;
+        if (difficulty == 12) { pw = g_settings.stage12_width; ph = g_settings.stage12_height; }
+        run_agent_proto(pw, ph, seed, 1, speed_ms, output_mode, &rules);
         return 0;
     }
 

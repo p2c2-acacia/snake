@@ -27,7 +27,13 @@ extern "C" {
 #define MAX_APPLES    MAX_SNAKE_LEN
 
 /* ── Cell types on the grid ─────────────────────────────────── */
-typedef enum { CELL_EMPTY = 0, CELL_SNAKE = 1, CELL_APPLE = 2 } CellType;
+typedef enum {
+    CELL_EMPTY      = 0,
+    CELL_SNAKE      = 1,
+    CELL_APPLE      = 2,
+    CELL_POISON     = 3,
+    CELL_WALL_BLOCK = 4
+} CellType;
 
 /* ── Absolute directions (clockwise: UP→RIGHT→DOWN→LEFT) ──── */
 typedef enum { DIR_UP = 0, DIR_RIGHT = 1, DIR_DOWN = 2, DIR_LEFT = 3 } Direction;
@@ -49,7 +55,7 @@ typedef enum {
 
 /* ── Difficulty rules ────────────────────────────────────────── */
 typedef struct {
-    int stage;                      /* 1..7 */
+    int stage;                      /* 1..12 */
     int stage2_fixed_apples;        /* stage 2 */
     int stage4_fixed_apples;        /* stage 4 */
     int stage5_goal_apples;         /* stage 5 pass threshold */
@@ -60,6 +66,15 @@ typedef struct {
     int stage7_increment_by;        /* add this many apples */
     int stage7_max_apples;          /* cap active apples */
     int stage7_goal_apples;         /* stage 7 pass threshold */
+
+    /* ── Modifier fields (stages 8+, 0 = off) ──────────────── */
+    int poison_count;               /* N = maintain N poison cells on board */
+    int obstacle_count;             /* N = place N wall blocks at init */
+    int vision_radius;              /* N = fog of war (Manhattan distance) */
+    int apple_decay_ticks;          /* N = apples vanish after N ticks */
+    int initial_snake_len;          /* 0 = default (3), else override */
+    int tick_penalty_interval;      /* N = score-- every N ticks w/o eating */
+    double score_multiplier;        /* computed from active modifiers */
 } GameRules;
 
 /* ── 2-D point ──────────────────────────────────────────────── */
@@ -76,13 +91,23 @@ typedef struct {
     Point         body[MAX_SNAKE_LEN];
     int           head_idx;
     int           snake_len;
+    int           target_snake_len;    /* snake grows each tick until this length */
 
     Direction     dir;                 /* current heading */
     Point         apples[MAX_APPLES];  /* active apples on the board */
     int           apple_count;         /* number of active apples */
+    int           apple_spawn_tick[MAX_APPLES]; /* tick when each apple was placed */
     int           apples_eaten;        /* total apples collected */
     int           goal_apples;         /* pass threshold */
     int           stage7_active_apples;/* dynamic active apples for stage 7 */
+
+    Point         poison[MAX_APPLES];  /* active poison cells on the board */
+    int           poison_count;        /* number of active poison cells */
+
+    Point         obstacles[MAX_APPLES]; /* wall-block positions */
+    int           obstacle_count;      /* number of active wall blocks */
+
+    int           last_eat_tick;       /* tick of last apple eaten (for penalty) */
 
     int           score;
     int           alive;               /* 1 while playing, 0 on death/win */

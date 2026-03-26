@@ -156,9 +156,29 @@ if (body contains (nx, ny)) {
 | 5 | Snake starts center, apples regenerate | Eat `goal_apples` apples |
 | 6 | Multiple regenerating apples | Eat `goal_apples` apples (time ranking) |
 | 7 | Increasing number of apples over time | Eat `goal_apples` apples (time ranking) |
+| 8 | **Obstacles** — wall blocks on the board | Eat `goal_apples` apples |
+| 9 | **Poison + Obstacles** — poison cells kill on contact | Eat `goal_apples` apples |
+| 10 | **Fog of war** — limited vision radius around head | Eat `goal_apples` apples (time ranking) |
+| 11 | **Urgency** — apples decay + tick penalty + obstacles | Eat `goal_apples` apples (time ranking) |
+| 12 | **Everything** — small board, long snake, fog, poison, obstacles, decay | Eat `goal_apples` apples (time ranking) |
 
-**Stages 1-5:** Pass/fail  
-**Stages 6-7:** Time ranking (fewer ticks = better score)
+**Stages 1-5, 8-9:** Pass/fail
+**Stages 6-7, 10-12:** Time ranking (fewer ticks = better score)
+
+### Additional State Fields (Stages 8+)
+
+Stages 8 and above may include these additional fields in the JSON state:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `poison` | array | Poison positions as `[[x, y], ...]` — moving onto one = instant death |
+| `obstacles` | array | Wall block positions as `[[x, y], ...]` — collision = death |
+| `vision_radius` | int | `0` = full visibility; `N` = fog of war (only see N Manhattan-distance cells from head) |
+| `apple_decay_ticks` | int | `0` = permanent apples; `N` = apples vanish after N ticks uneaten |
+| `tick_penalty_interval` | int | `0` = off; `N` = score decreases by 1 every N ticks without eating |
+| `score_multiplier` | float | Score multiplier from active modifiers (higher = harder config) |
+
+**Important:** When `vision_radius > 0`, the `snake`, `apples`, `poison`, and `obstacles` arrays **only contain positions within the vision radius** of the head. Cells outside your vision are unknown.
 
 ---
 
@@ -387,6 +407,30 @@ int main() {
     return 0;
 }
 ```
+
+---
+
+## Pseudocode Precision Requirements
+
+When the user provides pseudocode, you MUST evaluate it against these criteria before implementing. If any criterion fails, **ask for clarification instead of guessing**.
+
+### Vagueness triggers — ask, do not implement:
+- **"Find the best/nearest/closest X"** — Ask: "How should distance be measured? Manhattan distance (|dx|+|dy|), Euclidean, or BFS shortest path?"
+- **"Avoid dangerous/bad things"** — Ask: "What specifically counts as dangerous? Walls? Poison? Dead-ends? Cells adjacent to your body?"
+- **"Be smart about it" / "optimize" / "find optimal"** — Ask: "What specific algorithm or decision rule should I implement?"
+- **"If stuck / in trouble / in danger"** — Ask: "What specific condition defines 'stuck'? For example: all three moves lead to death? Only one safe move? Surrounded on 3 sides?"
+- **"Handle edge cases"** — Ask: "Which specific edge case? For example: no apples visible, all moves equally dangerous, snake length > half the board?"
+
+### Missing specification triggers:
+- If pseudocode describes what to do when an apple is visible but NOT what to do when **no apple is visible** (common with fog of war), ask about it.
+- If pseudocode says "avoid walls" but doesn't say what to do when **all paths have walls**, ask about the fallback.
+- If pseudocode mentions "checking if a move is safe" but doesn't define safe beyond "won't die immediately", ask how many steps ahead to check.
+
+### What you MUST NOT do:
+- Do NOT add BFS/flood-fill/pathfinding unless the student explicitly describes it.
+- Do NOT add look-ahead safety checking beyond what the pseudocode specifies.
+- Do NOT add random fallback logic unless the student says to.
+- Do NOT handle modifiers (poison, fog, obstacles, decay) unless the student mentions them. If the agent dies because of unhandled poison, that is a **learning moment**, not a bug for you to fix.
 
 ---
 
