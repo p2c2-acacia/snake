@@ -1,5 +1,5 @@
 {
-    "name": "Python Template",
-    "command": "python3 agent.py --pipe",
-    "description": "Beginner-friendly Python stdin/stdout template"
+  "name": "Python Template",
+  "command": "python3 hamiltonian.py --pipe",
+  "description": "Beginner-friendly Python stdin/stdout template"
 }
