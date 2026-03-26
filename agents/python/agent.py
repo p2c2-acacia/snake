@@ -61,6 +61,18 @@ def choose_action(state: dict) -> str:
     Beginner-friendly strategy:
     - try safe moves first (wall/body check using apples list if present)
     - pick one at random.
+
+    NOTE: The game state may also contain these fields (stages 8+):
+      - "poison": [[x,y], ...] — cells that kill on contact (like walls)
+      - "obstacles": [[x,y], ...] — static wall blocks that kill on contact
+      - "vision_radius": int — if >0, arrays only contain cells within
+            Manhattan distance of the head (fog of war)
+      - "apple_decay_ticks": int — if >0, apples vanish after N ticks
+      - "tick_penalty_interval": int — if >0, score decreases every N ticks
+            without eating
+      - "score_multiplier": float — difficulty multiplier applied to score
+    This template does NOT handle these fields. Students must add logic
+    for poison/obstacle avoidance, fog-of-war exploration, etc.
     """
     # High-level notes for beginners:
     # - The agent inspects the current snake, apples, and board size.

@@ -246,7 +246,8 @@ static double compute_score_multiplier(const GameRules *r) {
 }
 
 static void place_snake(SnakeGame *g, Point head, Direction dir, int len) {
-    len = clamp_int(len, 1, MAX_SNAKE_LEN);
+    int max_fit = (g->width < g->height ? g->width : g->height) / 2;
+    len = clamp_int(len, 1, max_fit > 0 ? max_fit : 1);
     g->target_snake_len = len;
     g->snake_len = 1;          /* start with head only */
     g->head_idx = 0;

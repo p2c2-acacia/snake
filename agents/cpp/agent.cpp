@@ -131,6 +131,18 @@ static Point next_head(Point h, const std::string &dir) {
 // - Reject moves that hit walls or the snake body (allow moving into the
 //   tail if the tail will move and the cell is not an apple).
 // - Choose uniformly at random among remaining safe moves.
+//
+// NOTE: The game state may also contain these JSON fields (stages 8+):
+//   "poison": [[x,y], ...] — cells that kill on contact (like walls)
+//   "obstacles": [[x,y], ...] — static wall blocks that kill on contact
+//   "vision_radius": int — if >0, arrays only show cells within Manhattan
+//       distance of head (fog of war)
+//   "apple_decay_ticks": int — if >0, apples vanish after N ticks
+//   "tick_penalty_interval": int — if >0, score decreases every N ticks
+//       without eating
+//   "score_multiplier": float — difficulty multiplier applied to score
+// This template does NOT handle these fields. Students must add logic
+// for poison/obstacle avoidance, fog-of-war exploration, etc.
 static std::string choose_action(const GameState &st) {
     if (st.snake.empty()) return "straight";
     std::set<std::pair<int, int>> body;

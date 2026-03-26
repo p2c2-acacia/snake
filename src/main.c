@@ -602,6 +602,155 @@ static void refresh_agent_registry_if_needed(void) {
     g_agents_stamp = cur;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * LEADERBOARD – per-config best scores persisted to scores.json
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#define LEADERBOARD_MAX 500      /* max entries in scores.json */
+
+typedef struct {
+    char config_key[128];
+    char agent_name[64];
+    double adjusted_score;
+    int raw_score;
+    int ticks;
+    int apples_eaten;
+    char timestamp[64];          /* ISO-8601 local time */
+} LeaderEntry;
+
+static LeaderEntry g_leaders[LEADERBOARD_MAX];
+static int         g_leader_count = 0;
+
+static void leaderboard_path(char *out, size_t outsz) {
+    snprintf(out, outsz, "%s/scores.json", g_exe_dir);
+}
+
+static void leaderboard_load(void) {
+    g_leader_count = 0;
+    char path[PATH_MAX];
+    leaderboard_path(path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    /* Read entire file */
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 0 || sz > 2 * 1024 * 1024) { fclose(f); return; }
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return; }
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    buf[rd] = '\0';
+    fclose(f);
+
+    /* Minimal parse: scan for objects in the top-level array */
+    const char *p = buf;
+    while (*p && *p != '[') p++;
+    if (*p == '[') p++;
+
+    while (g_leader_count < LEADERBOARD_MAX) {
+        while (*p && *p != '{') { if (*p == ']') goto done; p++; }
+        if (!*p) break;
+        /* Find closing brace */
+        const char *obj_start = p;
+        int depth = 0;
+        const char *obj_end = NULL;
+        for (const char *q = p; *q; q++) {
+            if (*q == '{') depth++;
+            else if (*q == '}') { depth--; if (depth == 0) { obj_end = q; break; } }
+        }
+        if (!obj_end) break;
+
+        /* Extract fields from this object */
+        size_t olen = (size_t)(obj_end - obj_start + 1);
+        char *obj = malloc(olen + 1);
+        if (!obj) break;
+        memcpy(obj, obj_start, olen);
+        obj[olen] = '\0';
+
+        LeaderEntry *e = &g_leaders[g_leader_count];
+        memset(e, 0, sizeof(*e));
+        int iv;
+        json_get_str(obj, "config_key", e->config_key, sizeof e->config_key);
+        json_get_str(obj, "agent_name", e->agent_name, sizeof e->agent_name);
+        json_get_str(obj, "timestamp", e->timestamp, sizeof e->timestamp);
+        if (json_get_int(obj, "raw_score", &iv)) e->raw_score = iv;
+        if (json_get_int(obj, "ticks", &iv)) e->ticks = iv;
+        if (json_get_int(obj, "apples_eaten", &iv)) e->apples_eaten = iv;
+        /* adjusted_score is a double — parse manually */
+        {
+            const char *as = strstr(obj, "\"adjusted_score\"");
+            if (as) {
+                as += strlen("\"adjusted_score\"");
+                while (*as == ' ' || *as == ':' || *as == '\t') as++;
+                e->adjusted_score = strtod(as, NULL);
+            }
+        }
+        if (e->config_key[0]) g_leader_count++;
+        free(obj);
+        p = obj_end + 1;
+    }
+done:
+    free(buf);
+}
+
+static void leaderboard_save(void) {
+    char path[PATH_MAX];
+    leaderboard_path(path, sizeof path);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "[\n");
+    for (int i = 0; i < g_leader_count; i++) {
+        LeaderEntry *e = &g_leaders[i];
+        fprintf(f,
+            "  {\"config_key\":\"%s\",\"agent_name\":\"%s\","
+            "\"adjusted_score\":%.2f,\"raw_score\":%d,"
+            "\"ticks\":%d,\"apples_eaten\":%d,"
+            "\"timestamp\":\"%s\"}%s\n",
+            e->config_key, e->agent_name,
+            e->adjusted_score, e->raw_score,
+            e->ticks, e->apples_eaten,
+            e->timestamp,
+            (i + 1 < g_leader_count) ? "," : "");
+    }
+    fprintf(f, "]\n");
+    fclose(f);
+}
+
+static int leaderboard_rank(const char *config_key, double adjusted_score) {
+    int rank = 1;
+    for (int i = 0; i < g_leader_count; i++) {
+        if (strcmp(g_leaders[i].config_key, config_key) != 0) continue;
+        if (g_leaders[i].adjusted_score > adjusted_score) rank++;
+    }
+    return rank;
+}
+
+static void leaderboard_insert(const char *config_key, const char *agent_name,
+                                double adjusted_score, int raw_score,
+                                int ticks_val, int apples_eaten) {
+    if (g_leader_count >= LEADERBOARD_MAX) {
+        /* Evict the oldest entry (first in array) */
+        for (int i = 0; i + 1 < g_leader_count; i++)
+            g_leaders[i] = g_leaders[i + 1];
+        g_leader_count--;
+    }
+    LeaderEntry *e = &g_leaders[g_leader_count++];
+    memset(e, 0, sizeof(*e));
+    snprintf(e->config_key, sizeof e->config_key, "%s", config_key);
+    snprintf(e->agent_name, sizeof e->agent_name, "%s", agent_name);
+    e->adjusted_score = adjusted_score;
+    e->raw_score = raw_score;
+    e->ticks = ticks_val;
+    e->apples_eaten = apples_eaten;
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    snprintf(e->timestamp, sizeof e->timestamp,
+             "%04d-%02d-%02dT%02d:%02d:%02d",
+             tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+             tm->tm_hour, tm->tm_min, tm->tm_sec);
+}
+
 static void update_rules_for_stage(GameRules *rules, int stage) {
     if (!rules) return;
     rules->stage = clamp(stage, 1, 12);
@@ -644,6 +793,21 @@ static void update_rules_for_stage(GameRules *rules, int stage) {
         rules->stage5_goal_apples = g_settings.stage12_goal_apples;
         break;
     }
+}
+
+static void build_config_key(char *out, size_t outsz, const AgentCfg *cfg) {
+    GameRules r = cfg->rules;
+    update_rules_for_stage(&r, cfg->difficulty_stage);
+    int w = cfg->width, h = cfg->height;
+    if (cfg->difficulty_stage == 12) {
+        w = g_settings.stage12_width;
+        h = g_settings.stage12_height;
+    }
+    snprintf(out, outsz, "s%d_p%d_o%d_v%d_d%d_l%d_t%d_%dx%d",
+             cfg->difficulty_stage,
+             r.poison_count, r.obstacle_count, r.vision_radius,
+             r.apple_decay_ticks, r.initial_snake_len,
+             r.tick_penalty_interval, w, h);
 }
 
 /* Resolve the directory containing our own binary. */
@@ -1289,7 +1453,7 @@ static void show_play_config(void) {
         { "Speed",      1, g_settings.speed_ms, 10, 5000, 10, 50, NULL, 0, "ms", "", 1 },
         { "Seed",       1, (int)g_settings.seed, 0, 999999, 1, 100, NULL, 0, NULL, "", 1 },
         { "Tick Mode",  0, g_settings.play_step ? 1 : 0, 0, 0, 0, 0, tick_opts, 2, NULL, "", 1 },
-        { "Difficulty", 1, g_settings.play_difficulty, 1, 7, 1, 1, NULL, 0, NULL, "", 1 },
+        { "Difficulty", 1, g_settings.play_difficulty, 1, 12, 1, 1, NULL, 0, NULL, "", 1 },
     };
     int nf = sizeof ff / sizeof ff[0];
 
@@ -1712,7 +1876,7 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
 
         int bw = 56;
         /* top stats area: ~18 rows, per-game table: tbl_rows + 2, controls: 3 */
-        int stats_h = is_time_rank ? 19 : 18;
+        int stats_h = is_time_rank ? 21 : 20;
         int bh = stats_h + tbl_rows + 5;
         int bx = (COLS - bw) / 2, by = 0;
         if (LINES > bh + 2) by = (LINES - bh) / 2;
@@ -1763,7 +1927,21 @@ static int show_summary(const AgentCfg *cfg, const BatchResult *br) {
             }
         }
         mvprintw(r++, bx + 3, "Avg apples eaten: %.1f", avg_eaten);
-        r++;
+        /* Score multiplier & leaderboard rank */
+        {
+            GameRules tmp_r = cfg->rules;
+            update_rules_for_stage(&tmp_r, cfg->difficulty_stage);
+            double mult = tmp_r.score_multiplier;
+            if (mult < 0.01) mult = 1.0;
+            mvprintw(r++, bx + 3, "Multiplier: %.2fx  Best adj: %.1f",
+                     mult, max_sc * mult);
+            char ckey[128];
+            build_config_key(ckey, sizeof ckey, cfg);
+            int rank = leaderboard_rank(ckey, max_sc * mult);
+            if (g_color) attron(COLOR_PAIR(CP_GOOD));
+            mvprintw(r++, bx + 3, "Leaderboard rank: #%d", rank);
+            if (g_color) attroff(COLOR_PAIR(CP_GOOD));
+        }
 
         /* ticks */
         if (g_color) attron(COLOR_PAIR(CP_INFO));
@@ -1994,7 +2172,7 @@ static void agent_mode(void) {
                               yesno_opts, 2, NULL, "", 1 };
     ff[F_LOG]    = (FField){ "Log Actions", 0, g_settings.agent_log ? 1 : 0, 0, 1, 0, 0,
                               yesno_opts, 2, NULL, "", 1 };
-    ff[F_DIFFICULTY] = (FField){ "Difficulty", 1, g_settings.agent_difficulty, 1, 7, 1, 1,
+    ff[F_DIFFICULTY] = (FField){ "Difficulty", 1, g_settings.agent_difficulty, 1, 12, 1, 1,
                                  NULL, 0, NULL, "", 1 };
     ff[F_OUTPUT] = (FField){ "Output", 0,
                              g_settings.agent_output_mode == OUTPUT_RAW_BOARD ? 1 : 0,
@@ -2051,6 +2229,31 @@ static void agent_mode(void) {
             BatchResult br;
             memset(&br, 0, sizeof br);
             run_agent_batch(&ac, &br);
+
+            /* Insert best passing result into leaderboard */
+            if (br.completed > 0) {
+                int best_idx = -1;
+                for (int gi = 0; gi < br.completed; gi++) {
+                    if (br.results[gi].outcome != GAME_OUTCOME_PASS) continue;
+                    if (best_idx < 0 || br.results[gi].score > br.results[best_idx].score)
+                        best_idx = gi;
+                }
+                if (best_idx >= 0) {
+                    char ckey[128];
+                    build_config_key(ckey, sizeof ckey, &ac);
+                    GameRules tmp_r = ac.rules;
+                    update_rules_for_stage(&tmp_r, ac.difficulty_stage);
+                    double mult = tmp_r.score_multiplier;
+                    if (mult < 0.01) mult = 1.0;
+                    double adj = br.results[best_idx].score * mult;
+                    leaderboard_insert(ckey, g_agents[ac.agent_idx].name,
+                                       adj, br.results[best_idx].score,
+                                       br.results[best_idx].ticks,
+                                       br.results[best_idx].apples_eaten);
+                    leaderboard_save();
+                }
+            }
+
             int action = show_summary(&ac, &br);
             free(br.results);
 
@@ -2087,6 +2290,7 @@ int main(int argc, char *argv[]) {
     load_settings();
     init_agent_registry();
     g_agents_stamp = agents_dir_stamp();
+    leaderboard_load();
 
     /* ── Detect CLI mode ────────────────────────────────────── */
     RunMode mode = RUN_MENU;
