@@ -79,12 +79,14 @@ void game_rules_default(GameRules *rules) {
     rules->stage4_fixed_apples   = 4;
     rules->stage5_goal_apples    = 10;
     rules->stage6_fixed_apples   = 3;
-    rules->stage6_goal_apples    = 20;
+    /* No apple goal for stage 6 (infinite / play until death or fill). */
+    rules->stage6_goal_apples    = 0;
     rules->stage7_initial_apples = 2;
     rules->stage7_increment_every = 5;
     rules->stage7_increment_by   = 1;
     rules->stage7_max_apples     = 8;
-    rules->stage7_goal_apples    = 30;
+    /* No apple goal for stage 7 (infinite / play until death or fill). */
+    rules->stage7_goal_apples    = 0;
 }
 
 /* ── Internal helpers ───────────────────────────────────────── */
@@ -118,7 +120,6 @@ static int remove_apple_at(SnakeGame *g, Point p) {
         for (int j = i; j + 1 < g->apple_count; j++)
             g->apples[j] = g->apples[j + 1];
         g->apple_count--;
-    
         return 1;
     }
     return 0;
@@ -255,14 +256,16 @@ static void spawn_stage_initial(SnakeGame *g) {
 
     if (stage == 6) {
         place_snake(g, (Point){cx, cy}, random_dir, 3);
-        g->goal_apples = clamp_int(g->rules.stage6_goal_apples, 1, MAX_APPLES);
+        /* No apple goal for stage 6: play until death or board is filled. */
+        g->goal_apples = 0;
         ensure_target_apples(g, clamp_int(g->rules.stage6_fixed_apples, 1, MAX_APPLES));
         return;
     }
 
     if (stage == 7) {
         place_snake(g, (Point){cx, cy}, random_dir, 3);
-        g->goal_apples = clamp_int(g->rules.stage7_goal_apples, 1, MAX_APPLES);
+        /* No apple goal for stage 7: play until death or board is filled. */
+        g->goal_apples = 0;
         g->stage7_active_apples =
             clamp_int(g->rules.stage7_initial_apples, 1, MAX_APPLES);
         ensure_target_apples(g, g->stage7_active_apples);
@@ -292,10 +295,7 @@ static void on_apple_eaten(SnakeGame *g) {
     }
 
     if (stage == 6) {
-        if (g->apples_eaten >= g->goal_apples) {
-            mark_pass(g);
-            return;
-        }
+        /* No apple-goal termination for stage 6; keep fixed active apples. */
         ensure_target_apples(g, clamp_int(g->rules.stage6_fixed_apples, 1, MAX_APPLES));
         return;
     }
@@ -310,11 +310,7 @@ static void on_apple_eaten(SnakeGame *g) {
                 clamp_int(g->stage7_active_apples + by, 1, max_apples);
         }
 
-        if (g->apples_eaten >= g->goal_apples) {
-            mark_pass(g);
-            return;
-        }
-
+        /* No apple-goal termination for stage 7; update active apples instead. */
         ensure_target_apples(g, g->stage7_active_apples);
         return;
     }
@@ -351,7 +347,6 @@ void game_init_with_rules(SnakeGame *g, int width, int height,
     g->pending_turn = TURN_STRAIGHT;
     srand(seed ? seed : (unsigned)time(NULL));
     spawn_stage_initial(g);
-
 }
 
 void game_set_turn(SnakeGame *g, Turn t) {
@@ -406,9 +401,14 @@ int game_tick(SnakeGame *g) {
         g->score++;
         g->apples_eaten++;
         on_apple_eaten(g);
+        /* If the snake has filled the entire board, that's a pass. */
+        if (g->snake_len >= g->width * g->height) {
+            mark_pass(g);
+            return g->alive;
+        }
     }
 
     g->tick++;
-
+    
     return g->alive;
 }
